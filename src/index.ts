@@ -19,7 +19,7 @@ import { luaModReducer } from './reducers/luaReducer';
 
 // IDs for different stores and nexus
 import { 
-  EPIC_ID, STEAM_ID, GAME_ID, EXECUTABLE, MODSFOLDER_PATH, 
+  STEAM_ID, GAME_ID, EXECUTABLE, MODSFOLDER_PATH, 
   MOVIESMOD_PATH, IGNORE_CONFLICTS, IGNORE_DEPLOY, STOP_PATTERNS 
 } from './common';
 
@@ -34,7 +34,7 @@ let monitor: LuaModsMonitor;
 
 const LOADORDER_FILE = "loadOrder.json";
 const VERSION_PATH = path.join(
-  "Phoenix",
+  "EscapeTheBackrooms",
   "Content",
   "Data",
   "Version",
@@ -93,7 +93,7 @@ function main(context: types.IExtensionContext) {
   // register a whole game, basic metadata and folder paths
   context.registerGame({
     id: GAME_ID,
-    name: "Hogwarts Legacy",
+    name: "Escape The Backrooms",
     mergeMods: true,
     getGameVersion: getGameVersion,
     queryPath: findGame,
@@ -108,12 +108,10 @@ function main(context: types.IExtensionContext) {
       symlinks: false,
     },
     environment: {
-      ["SteamAppId"]: STEAM_ID,
-      ["EpicAppId"]: EPIC_ID,
+      ["SteamAppId"]: STEAM_ID
     },
     details: {
       ["SteamAppId"]: parseInt(STEAM_ID, 10),
-      ["EpicAppId"]: EPIC_ID,
       stopPatterns: STOP_PATTERNS,
       ignoreDeploy: IGNORE_DEPLOY,
       ignoreConflicts: IGNORE_CONFLICTS
@@ -207,9 +205,8 @@ function main(context: types.IExtensionContext) {
 
       //console.log("discovery", discovery);
 
-      // because of course epic is using a different folder name to Steam to store save game data in
       const gameFolderName: string =
-        discovery?.store == "epic" ? "HogwartsLegacy" : "Hogwarts Legacy";
+        discovery?.store == "EscapeTheBackrooms";
       const saveGameFolderPath: string = path.join(
         VortexUtils.GetLocalAppDataPath(),
         gameFolderName,
@@ -220,7 +217,7 @@ function main(context: types.IExtensionContext) {
       try {
         util.opn(saveGameFolderPath);
       } catch (error) {
-        log('warn', 'Error opening Hogwarts Legacy save folder', error)
+        log('warn', 'Error opening Escape The Backrooms save folder', error)
         // console.warn(`${error}`);
         return;
       }      
@@ -269,7 +266,7 @@ function main(context: types.IExtensionContext) {
       // Get the path to the Mods.txt file.
       const gamePath: string | undefined = state.settings.gameMode.discovered[GAME_ID]?.path || undefined;
       if (!gamePath) return;
-      const modsPath = path.join(gamePath, 'Phoenix', 'Binaries', 'Win64', 'Mods', 'Mods.txt');
+      const modsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods', 'Mods.txt');
       // Stop monitoring the mods.txt file, write the new manifest, resume the monitor.
       monitor.pause();
       writeManifest(currLoadOrder, modsPath)
@@ -328,7 +325,7 @@ async function DeserializeLoadOrder(
     try {
       data = JSON.parse(fileData);
     } catch (error) {
-      log('error', 'Error decoding saved JSON for Hogwarts Legacy load order', error)
+      log('error', 'Error decoding saved JSON for Escape The Backrooms load order', error)
       // console.error(error);
     }
   } catch (error) {
@@ -415,23 +412,16 @@ async function setup(discovery: types.IDiscoveryResult) {
 async function requiresLauncher(gamePath: string, store?: string) {
   // console.log(`requiresLauncher ${gamePath} ${store} {}`);
 
-  if (store === "steam") {
-    return Promise.resolve({
-      launcher: "steam",
-      addInfo: {
-        appId: STEAM_ID,
-        parameters: [],
-        launchType: "gamestore",
-      },
-    });
-  } else if (store === "epic") {
-    return Promise.resolve({
-      launcher: "epic",
-      addInfo: {
-        appId: EPIC_ID,
-      },
-    });
-  }
+
+  return Promise.resolve({
+    launcher: "steam",
+    addInfo: {
+      appId: STEAM_ID,
+      parameters: [],
+      launchType: "gamestore",
+    },
+  });
+  
 
   // return a void promise if nothing else
   return Promise.resolve();
@@ -443,8 +433,7 @@ async function findGame() {
 
   try {
     const game: types.IGameStoreEntry = await util.GameStoreHelper.findByAppId([
-      EPIC_ID,
-      STEAM_ID,
+      STEAM_ID
     ]);
     return Promise.resolve(game.gamePath);
   } catch (error) {

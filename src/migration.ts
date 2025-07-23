@@ -11,7 +11,7 @@ async function migrate0_2_11(context: types.IExtensionContext, oldversion: strin
   const mods = state.persistent.mods[GAME_ID] ?? {};
 
   if (!Object.keys(mods).length) {
-    log("info", "No mods to migrate for Hogwarts Legacy");
+    log("info", "No mods to migrate for Escape The Backrooms");
     return;
   }
 
@@ -23,7 +23,7 @@ async function migrate0_2_11(context: types.IExtensionContext, oldversion: strin
   try {
     const gamePath = state.settings.gameMode.discovered?.[GAME_ID]?.path;
     if (!gamePath) {
-      log("info", "No path save for Hogwarts Legacy, aborting migration");
+      log("info", "No path save for Escape The Backrooms, aborting migration");
       return;
     }
     const modsFolder = path.join(gamePath, MODSFOLDER_PATH);
@@ -34,7 +34,7 @@ async function migrate0_2_11(context: types.IExtensionContext, oldversion: strin
       modsFolder,
     );
   } catch (err) {
-    log("error", "Failed to clean up ~mods folder for Hogwarts Legacy", err);
+    log("error", "Failed to clean up ~mods folder for Escape The Backrooms", err);
   }
 
   // Reset the load order by deleting the JSON file.
@@ -90,7 +90,7 @@ export default async function Migrate(context: types.IExtensionContext, oldVersi
     try {
       await migrate0_2_11(context, oldVersion);
     } catch (err) {
-      log("error", "Failed to migrate Hogwarts Legacy to 0.2.11");
+      log("error", "Failed to migrate Escape The Backrooms to 0.2.11");
     }
   }
 
@@ -130,7 +130,7 @@ export default async function Migrate(context: types.IExtensionContext, oldVersi
   context.api.sendNotification({
     type: "info",
     message:
-      "The Hogwarts Legacy Extension has been updated. If you previously installed a mod modifying movie files (e.g. paintings) then there is a good chance that they haven't been working as those type of mods weren't officially supported. If this is the case then please reinstall those individual mods.",
+      "The Escape The Backrooms Extension has been updated. If you previously installed a mod modifying movie files (e.g. paintings) then there is a good chance that they haven't been working as those type of mods weren't officially supported. If this is the case then please reinstall those individual mods.",
   });
 
   return context.api

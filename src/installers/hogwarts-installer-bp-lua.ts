@@ -5,8 +5,8 @@ import {
 } from '../common';
 
 const LUA_EXT = '.lua';
-const LUAInstallPath = path.join('Phoenix','Binaries','Win64','Mods'); // Phoenix\Binaries\Win64\Mods
-const BlueprintInstallPath = path.join('Phoenix','Content','PAKS','LogicMods');
+const LUAInstallPath = path.join('EscapeTheBackrooms','Binaries','Win64','Mods'); // EscapeTheBackrooms\Binaries\Win64\Mods
+const BlueprintInstallPath = path.join('EscapeTheBackrooms','Content','PAKS','LogicMods');
 
 const HogwartsBluePrintOrLuaInstaller = {
     test,

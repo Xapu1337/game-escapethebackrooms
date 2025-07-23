@@ -1,14 +1,14 @@
 {
-  "name": "hogwartslegacy",
+  "name": "escapethebackrooms",
   "version": "0.3.5",
-  "description": "Vortex Extension for Hogwarts Legacy",
+  "description": "Vortex Extension for Escape The Backrooms",
   "author": "lordvoldem0rt",
   "private": true,
   "main": "./dist/index.ts",
   "type": "module",
   "config": {
-    "extensionName": "Game: Hogwarts Legacy",
-    "issueTracker": "https://github.com/lordvoldem0rt/game-hogwartslegacy/issues"
+    "extensionName": "Game: Escape The Backrooms",
+    "issueTracker": "https://github.com/lordvoldem0rt/game-escapethebackrooms/issues"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
