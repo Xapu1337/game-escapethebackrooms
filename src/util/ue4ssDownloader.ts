@@ -100,10 +100,8 @@ export async function uninstallUE4SS(context: types.IExtensionContext): Promise<
     const targets = [
         path.join(binPath, UE4SS_CORE_DLL),
         path.join(binPath, 'dwmapi.dll'),
-        path.join(binPath, 'README.md'),
-        path.join(binPath, 'readme.md'),
+        path.join(binPath, 'README.md'), // typically removed by installer, but just in case
         path.join(binPath, 'Changelog.md'),
-        path.join(binPath, 'changelog.md'),
         path.join(binPath, 'UE4SS-settings.ini'),
         path.join(binPath, 'UE4SS.version'),
         path.join(binPath, 'Mods'), // in case present
