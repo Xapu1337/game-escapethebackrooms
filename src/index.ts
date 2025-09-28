@@ -1,60 +1,43 @@
-import path from "path";
-import {
-  actions,
-  fs,
-  log,
-  selectors,
-  types,
-  util,
-} from "vortex-api";
-// import UnrealGameHelper from "vortex-ext-common";
-// import { VortexCommands } from "./VortexCommands";
-// import { VortexEvents } from "./VortexEvents";
-import * as VortexUtils from "./VortexUtils";
-import { ILoadOrderEntry, IProps } from "./types";
-import Migrate from "./migration";
+import path from 'path';
+import { actions, fs, log, selectors, types, util } from 'vortex-api';
+import * as VortexUtils from './VortexUtils';
+import { ILoadOrderEntry, IProps } from './types';
+import Migrate from './migration';
 import { LuaModsMonitor, refreshLuaMods, writeManifest } from './util/luaModsUtil';
 import LuaModsLoadOrderPage from './views/LuaModsLoadOrderPage';
 import { luaModReducer } from './reducers/luaReducer';
 
 // IDs for different stores and nexus
-import { 
-  STEAM_ID, GAME_ID, EXECUTABLE, MODSFOLDER_PATH, 
-  MOVIESMOD_PATH, IGNORE_CONFLICTS, IGNORE_DEPLOY, STOP_PATTERNS 
+import {
+  STEAM_ID,
+  GAME_ID,
+  EXECUTABLE,
+  MODSFOLDER_PATH,
+  MOVIESMOD_PATH,
+  IGNORE_CONFLICTS,
+  IGNORE_DEPLOY,
+  STOP_PATTERNS,
+  MODTYPE_MOVIES,
+  MODTYPE_PAK,
+  INSTALLER_MOVIES,
+  INSTALLER_BP_LUA,
 } from './common';
-
-// Abstract away a lot of the code for specific features into their own classes.
-import HogwartsMovieInstaller from './installers/hogwarts-installer-movies';
-import HogwartsBluePrintOrLuaInstaller from './installers/hogwarts-installer-bp-lua';
-import HogwartsMovieModType from './modtypes/hogwarts-modtype-movies';
-import HogwartsPAKModType from './modtypes/hogwarts-PAK-modtype';
-import HogwartsMovieMerger from './merges/movies-merge';
+import ensureUE4SS from './util/ue4ssDownloader';
+import ETBMovieInstaller from './installers/etb-installer-movies';
+import ETBBluePrintOrLuaInstaller from './installers/etb-installer-bp-lua';
+import ETBMoviesModType from './modtypes/etb-modtype-movies';
+import ETBPAKModType from './modtypes/etb-modtype-pak';
+import ETBMovieMerger from './merges/etb-movies-merge';
 
 let monitor: LuaModsMonitor;
 
-const LOADORDER_FILE = "loadOrder.json";
-const VERSION_PATH = path.join(
-  "EscapeTheBackrooms",
-  "Content",
-  "Data",
-  "Version",
-  "DA_Version.txt",
-); // relative to game root
-
-
-// important that will be updated in main once function
-// let CONTEXT: IExtensionContext;
-// let API: IExtensionApi;
-
-// let vortexCommands: VortexCommands;
-// let vortexEvents: VortexEvents;
+const LOADORDER_FILE = 'loadOrder.json';
+const VERSION_PATH = path.join('EscapeTheBackrooms', 'Content', 'Data', 'Version', 'DA_Version.txt');
 
 async function getGameVersion(discoveryPath: string) {
   const fullPath = path.join(discoveryPath, VERSION_PATH);
-
   try {
-    const contents = await fs.readFileAsync(fullPath, { encoding: "utf8" });
-    // console.log(contents);
+    const contents = await fs.readFileAsync(fullPath, { encoding: 'utf8' });
     return Promise.resolve(contents);
   } catch (error) {
     return Promise.reject(error);
@@ -77,158 +60,167 @@ async function getGameVersion(discoveryPath: string) {
 // }
 
 function main(context: types.IExtensionContext) {
-  context.once(() => {
-    // event and command references
-    // vortexCommands = new VortexCommands(context);
-    // vortexEvents = new VortexEvents(context);
+  context.once(() => undefined);
 
-    // CONTEXT = context;
-    // API = context.api;
+  registerGame(context);
+  registerLoadOrderIntegration(context);
+  registerLuaPage(context);
+  registerMigrations(context);
+  registerModTypes(context);
+  registerInstallers(context);
+  registerMerges(context);
+  registerActions(context);
+  setupReactiveHooks(context);
 
-    // vortexEvents.onWillDeploy.subscribe(OnWillDeploy);
+  return true;
+}
 
-    // console.log("initialising the hogwarts extension! context.once()");
-  });
-
-  // register a whole game, basic metadata and folder paths
+function registerGame(context: types.IExtensionContext) {
   context.registerGame({
     id: GAME_ID,
-    name: "Escape The Backrooms",
+    name: 'Escape The Backrooms',
     mergeMods: true,
-    getGameVersion: getGameVersion,
+    getGameVersion,
     queryPath: findGame,
     supportedTools: [],
-    queryModPath: () => ".",
-    logo: "gameart.jpg",
+    queryModPath: () => '.',
+    logo: 'gameart.jpg',
     executable: () => EXECUTABLE,
     requiredFiles: [EXECUTABLE],
-    setup: setup,
+    setup,
     requiresCleanup: true,
-    compatible: {
-      symlinks: false,
-    },
-    environment: {
-      ["SteamAppId"]: STEAM_ID
-    },
+    compatible: { symlinks: false },
+    environment: { SteamAppId: STEAM_ID },
     details: {
-      ["SteamAppId"]: parseInt(STEAM_ID, 10),
+      SteamAppId: parseInt(STEAM_ID, 10),
       stopPatterns: STOP_PATTERNS,
       ignoreDeploy: IGNORE_DEPLOY,
-      ignoreConflicts: IGNORE_CONFLICTS
+      ignoreConflicts: IGNORE_CONFLICTS,
     },
-    requiresLauncher: requiresLauncher,
+    requiresLauncher,
   });
+}
 
+function registerLoadOrderIntegration(context: types.IExtensionContext) {
   context.registerLoadOrder({
     gameId: GAME_ID,
-    validate: async () => Promise.resolve(undefined), // no validation needed
-    deserializeLoadOrder: async () => await DeserializeLoadOrder(context),
-    serializeLoadOrder: async (loadOrder) =>
-      await SerializeLoadOrder(context, loadOrder),
+    validate: async () => undefined,
+    deserializeLoadOrder: async () => DeserializeLoadOrder(context),
+    serializeLoadOrder: async (loadOrder) => SerializeLoadOrder(context, loadOrder),
     toggleableEntries: false,
-    usageInstructions: `Re-position entries by draging and dropping them - note that the mod further down the list will be loaded last and win any conflicts. Mods that replace the .bk2 video files located in ${MOVIESMOD_PATH} aren't affected, only PAK (and their associated) files are.`,
+    usageInstructions:
+      'Re-position entries by dragging and dropping them. Mods further down load last and win conflicts. Movie replacers (.bk2) are unaffected; only PAK style files are.',
   });
+}
 
-  context.registerMainPage('highlight-lab', 'Lua Mods', LuaModsLoadOrderPage, {
-    id: `${GAME_ID}-lua-mods`,
-    group: 'per-game',
-    hotkey: 'U',
-    visible: () => {
-      const state = context.api.getState();
-      const activeGameId = selectors.activeGameId(state);
-      return (activeGameId === GAME_ID);
+function registerLuaPage(context: types.IExtensionContext) {
+  context.registerMainPage(
+    'highlight-lab',
+    'Lua Mods',
+    LuaModsLoadOrderPage,
+    {
+      id: `${GAME_ID}-lua-mods`,
+      group: 'per-game',
+      hotkey: 'U',
+      visible: () => selectors.activeGameId(context.api.getState()) === GAME_ID,
+      priority: 120,
     },
-    priority: 120
-  });
-
-  // Register State controls for LUA load order
+  );
   context.registerReducer(['session', 'lualoadorder'], luaModReducer);
+}
 
+function registerMigrations(context: types.IExtensionContext) {
   context.registerMigration((oldVer) => Migrate(context, oldVer));
+}
 
+function registerModTypes(context: types.IExtensionContext) {
   context.registerModType(
-    "hogwarts-modtype-movies",
+    MODTYPE_MOVIES,
     95,
-    HogwartsMovieModType.isSupported,
-    (game) => HogwartsMovieModType.getPath(context, game),
-    HogwartsMovieModType.test,
-    HogwartsMovieModType.options,
+    ETBMoviesModType.isSupported,
+    (game) => ETBMoviesModType.getPath(context, game),
+    ETBMoviesModType.test,
+    ETBMoviesModType.options,
   );
 
   context.registerModType(
-    "hogwarts-PAK-modtype",
+    MODTYPE_PAK,
     25,
-    HogwartsPAKModType.isSupported,
-    (game) => HogwartsPAKModType.getPath(context, game),
-    HogwartsPAKModType.test,
-    { mergeMods: (mod) => HogwartsPAKModType.options.mergeMods(mod, context), name: "PAK Mod" },
+    ETBPAKModType.isSupported,
+    (game) => ETBPAKModType.getPath(context, game),
+    ETBPAKModType.test,
+    { mergeMods: (mod) => ETBPAKModType.options.mergeMods(mod, context), name: 'PAK Mod' },
   );
+}
 
+function registerInstallers(context: types.IExtensionContext) {
   context.registerInstaller(
-    "hogwarts-installer-movies",
+    INSTALLER_MOVIES,
     90,
-    HogwartsMovieInstaller.test,
-    (files) => HogwartsMovieInstaller.install(files, context),
+    ETBMovieInstaller.test,
+    (files) => ETBMovieInstaller.install(files, context),
   );
-  
+
   context.registerInstaller(
-    "hogwarts-installer-bp-lua", 
-    90, 
-    HogwartsBluePrintOrLuaInstaller.test, 
-    HogwartsBluePrintOrLuaInstaller.install
+    INSTALLER_BP_LUA,
+    90,
+    ETBBluePrintOrLuaInstaller.test,
+    ETBBluePrintOrLuaInstaller.install,
   );
+}
 
+function registerMerges(context: types.IExtensionContext) {
   context.registerMerge(
-    (game) => HogwartsMovieMerger.test(context, game),
-    (filePath, mergePath) => HogwartsMovieMerger.merge(context, filePath, mergePath),
-    HogwartsMovieMerger.modtype,
+    (game) => ETBMovieMerger.test(context, game),
+    (filePath, mergePath) => ETBMovieMerger.merge(context, filePath, mergePath),
+    ETBMovieMerger.modtype,
   );
+}
 
-  // 200 so it goes to bottom of menu list?
+function registerActions(context: types.IExtensionContext) {
   context.registerAction(
-    "mod-icons",
+    'mod-icons',
     120,
-    "open-ext",
+    'open-ext',
     {},
-    "Open Save Game Folder",
+    'Open Save Game Folder',
     () => {
-      const api = context.api;
-      const state = api.getState();
-
-      const discovery: types.IDiscoveryResult =
-        state.settings.gameMode.discovered?.[GAME_ID];
-
-      if (discovery == undefined) {
-        //console.warn(`discovery is undefined`);
-        return;
-      }
-
-      //console.log("discovery", discovery);
-
-      const gameFolderName: string =
-        discovery?.store == "EscapeTheBackrooms";
-      const saveGameFolderPath: string = path.join(
+      const saveGameFolderPath = path.join(
         VortexUtils.GetLocalAppDataPath(),
-        gameFolderName,
-        "Saved",
-        "SaveGames",
+        'EscapeTheBackrooms',
+        'Saved',
+        'SaveGames',
       );
-
       try {
         util.opn(saveGameFolderPath);
       } catch (error) {
-        log('warn', 'Error opening Escape The Backrooms save folder', error)
-        // console.warn(`${error}`);
-        return;
-      }      
+        log('warn', 'Error opening save folder', error);
+      }
     },
     () => selectors.activeGameId(context.api.getState()) === GAME_ID,
   );
 
+  context.registerAction(
+    'mod-icons',
+    125,
+    'download',
+    {},
+    'Install / Update UE4SS',
+    () => {
+      void ensureUE4SS(context).catch((err) => log('error', 'UE4SS download failed', err));
+    },
+    () => selectors.activeGameId(context.api.getState()) === GAME_ID,
+  );
+}
+
+function setupReactiveHooks(context: types.IExtensionContext) {
   context.once(() => {
     monitor = new LuaModsMonitor(context.api);
-    context.api.events.on('gamemode-activated', async (gameId) => gameId === GAME_ID ? monitor?.start() : monitor?.stop());
-    // Pause the monitor during deployment
+
+    context.api.events.on('gamemode-activated', async (g) => {
+      if (g === GAME_ID) return monitor.start();
+      return monitor.stop();
+    });
     context.api.events.on('will-deploy', () => monitor.pause());
     context.api.events.on('will-purge', () => monitor.pause());
     context.api.events.on('did-deploy', () => {
@@ -239,124 +231,94 @@ function main(context: types.IExtensionContext) {
       monitor.resume();
       refreshLuaMods(context.api);
     });
-    context.api.events.on('profile-did-change', (profileId: string) => {
-      const state = context.api.getState();
-      const profile = selectors.profileById(state, profileId);
-      // Do nothing if this isn't hogwarts!
+    context.api.events.on('profile-did-change', (pid: string) => {
+      const st = context.api.getState();
+      const profile = selectors.profileById(st, pid);
       if (profile.gameId !== GAME_ID) return;
-      // When the actual profile change happens
       refreshLuaMods(context.api);
     });
 
-    context.api.setStylesheet('hogwarts-styles', path.join(__dirname, 'custom-styles.scss'));
+    context.api.setStylesheet('etb-styles', path.join(__dirname, 'custom-styles.scss'));
 
-    // When the loadorder changes, update the manifest on disk.
-    context.api.onStateChange(['session', 'lualoadorder'], (previous, current) => {
-      // Get game and profile info.
-      const state = context.api.getState();
-      const gameId = selectors.activeGameId(state);
-      const profile = selectors.activeProfile(state);
-      // Not Hogwarts of we swapped to an invalid profile.
+    context.api.onStateChange(['session', 'lualoadorder'], (prev, curr) => {
+      const st = context.api.getState();
+      const gameId = selectors.activeGameId(st);
+      const profile = selectors.activeProfile(st);
       if (gameId !== GAME_ID || !profile) return;
-      // Get the actual load orders to compare.
-      const prevLoadOrder = previous[profile.id];
-      const currLoadOrder = current[profile.id];
-      // If there's no previous state, we've probably just loaded it from the disk. Also ignore identical states.
-      if (!prevLoadOrder || (prevLoadOrder === currLoadOrder)) return;
-      // Get the path to the Mods.txt file.
-      const gamePath: string | undefined = state.settings.gameMode.discovered[GAME_ID]?.path || undefined;
-      if (!gamePath) return;
-      const modsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods', 'Mods.txt');
-      // Stop monitoring the mods.txt file, write the new manifest, resume the monitor.
+
+      const prevLO = prev[profile.id];
+      const currLO = curr[profile.id];
+      if (!prevLO || prevLO === currLO) return;
+
+      const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
+      if (!gp) return;
+
+      const modsPath = path.join(
+        gp,
+        'EscapeTheBackrooms',
+        'Binaries',
+        'Win64',
+        'Mods',
+        'Mods.txt',
+      );
       monitor.pause();
-      writeManifest(currLoadOrder, modsPath)
+      writeManifest(currLO, modsPath)
         .catch((err) => log('error', 'Could not write LUA manifest', err))
         .finally(() => monitor.resume());
     });
-  })
-
-  return true;
+  });
 }
 
 /**
  * Should be used to filter and insert wanted data into Vortex's loadOrder application state. Once that's done, Vortex
  * will trigger a serialization event which will ensure the data is written to the load order file.
  */
-async function DeserializeLoadOrder(
-  context: types.IExtensionContext,
-): Promise<types.LoadOrder> {
-  //// console.log("HOGWARTS: DeserializeLoadOrder");
-
-  // get all the main vortex properties
+async function DeserializeLoadOrder(context: types.IExtensionContext): Promise<types.LoadOrder> {
   const props: IProps = GetVortexProperties(context);
-
-  // build path to load order file
   const loadOrderPath = path.join(
     VortexUtils.GetUserDataPath(),
     props.profile.gameId,
-    props.profile.id + "_" + LOADORDER_FILE,
+    `${props.profile.id}_${LOADORDER_FILE}`,
   );
-  //// console.log(`loadOrderPath=${loadOrderPath}`);
 
-  // get current state of the mods
-  const currentModsState = util.getSafe(props.profile, ["modState"], {});
+  const currentModsState = util.getSafe(props.profile, ['modState'], {});
+  const enabledModIds = Object
+    .keys(currentModsState)
+    .filter((m) => util.getSafe(currentModsState, [m, 'enabled'], false));
 
-  // we only want to insert enabled mods.
-  const enabledModIds = Object.keys(currentModsState).filter((modId) =>
-    util.getSafe(currentModsState, [modId, "enabled"], false),
-  );
   const mods: Record<string, types.IMod> = util.getSafe(
     props.state,
-    ["persistent", "mods", GAME_ID],
+    ['persistent', 'mods', GAME_ID],
     {},
   );
 
-  // set up blank load order entry array and we will try to fill it with loaded data from the file
   let data: ILoadOrderEntry[] = [];
-
-  // try to load serialized data
   try {
-    const fileData = await fs.readFileAsync(loadOrderPath, {
-      encoding: "utf8",
-    });
-    //// console.log(fileData);
-
-    // try to parse loaded file into array of load order entry
+    const fileData = await fs.readFileAsync(loadOrderPath, { encoding: 'utf8' });
     try {
       data = JSON.parse(fileData);
-    } catch (error) {
-      log('error', 'Error decoding saved JSON for Escape The Backrooms load order', error)
-      // console.error(error);
+    } catch (err) {
+      log('error', 'Error decoding load order JSON', err);
     }
-  } catch (error) {
-    // file doesn't exist
-    //console.warn(error);
+  } catch {
+    // missing file is acceptable
   }
 
-  // User may have disabled/removed a mod from the mods page - we need to filter out any existing
-  //  entries from the data we parsed.
-  const filteredData = data.filter((entry) => enabledModIds.includes(entry.id));
-
-  // Check if the user added any new mods, and only add things that aren't in collections and aren't movies types
+  const filteredData = data.filter((e) => enabledModIds.includes(e.id));
   const newMods = enabledModIds.filter(
     (id) =>
-      ["hogwarts-PAK-modtype", "hogwarts-modtype-movies"].includes(
-        mods[id]?.type,
-      ) && filteredData.find((loEntry) => loEntry.id === id) === undefined,
+      [MODTYPE_PAK, MODTYPE_MOVIES].includes(mods[id]?.type) &&
+      filteredData.find((lo) => lo.id === id) === undefined,
   );
 
-  // removed mods[id]?.type != "hogwarts-modtype-movies"
-
-  // Add any newly added mods to the bottom of the loadOrder.
-  newMods.forEach((newMod) => {
+  newMods.forEach((nm) =>
     filteredData.push({
-      id: newMod,
-      modId: newMod,
+      id: nm,
+      modId: nm,
       enabled: true,
-      name:
-        mods[newMod] !== undefined ? util.renderModName(mods[newMod]) : newMod,
-    });
-  });
+      name: mods[nm] ? util.renderModName(mods[nm]) : nm,
+    }),
+  );
 
   return Promise.resolve(filteredData);
 }
@@ -366,87 +328,52 @@ async function DeserializeLoadOrder(
 async function SerializeLoadOrder(
   context: types.IExtensionContext,
   loadOrder: types.LoadOrder,
-  // previousLoadOrder: types.LoadOrder,
 ): Promise<void> {
-  // console.log("HOGWARTS: SerializeLoadOrder");
-
   const props: IProps = GetVortexProperties(context);
-
-  // build path to load order file
   const loadOrderPath = path.join(
     VortexUtils.GetUserDataPath(),
     props.profile.gameId,
-    props.profile.id + "_" + LOADORDER_FILE,
+    `${props.profile.id}_${LOADORDER_FILE}`,
   );
-  // console.log(`loadOrderPath=${loadOrderPath}`);
-
-  // write prefixed load order to file
   try {
     await fs.writeFileAsync(loadOrderPath, JSON.stringify(loadOrder, null, 4), {
-      encoding: "utf8",
+      encoding: 'utf8',
     });
-  } catch (error) {
-    return Promise.reject(error);
+  } catch (e) {
+    return Promise.reject(e);
   }
-
-  // something has changed so we need to tell vortex that a deployment will be necessary
   context.api.store.dispatch(actions.setDeploymentNecessary(GAME_ID, true));
-
   return Promise.resolve();
 }
 
 //#endregion
 
 async function setup(discovery: types.IDiscoveryResult) {
-  const absoluteModFolderPath = path.join(discovery.path, MODSFOLDER_PATH);
-
+  const p = path.join(discovery.path, MODSFOLDER_PATH);
   try {
-    // make sure the mod folder exists (! is for trusting that it won't be null)
-    await fs.ensureDirWritableAsync(absoluteModFolderPath);
+    await fs.ensureDirWritableAsync(p);
     return Promise.resolve;
-  } catch (error) {
-    return Promise.reject(error);
+  } catch (e) {
+    return Promise.reject(e);
   }
 }
 
 async function requiresLauncher(gamePath: string, store?: string) {
-  // console.log(`requiresLauncher ${gamePath} ${store} {}`);
-
-
   return Promise.resolve({
-    launcher: "steam",
-    addInfo: {
-      appId: STEAM_ID,
-      parameters: [],
-      launchType: "gamestore",
-    },
+    launcher: 'steam',
+    addInfo: { appId: STEAM_ID, parameters: [], launchType: 'gamestore' },
   });
-  
-
-  // return a void promise if nothing else
-  return Promise.resolve();
 }
 
 async function findGame() {
-  //debugger;
-  //// console.log("findGame()");
-
   try {
-    const game: types.IGameStoreEntry = await util.GameStoreHelper.findByAppId([
-      STEAM_ID
+    const g: types.IGameStoreEntry = await util.GameStoreHelper.findByAppId([
+      STEAM_ID,
     ]);
-    return Promise.resolve(game.gamePath);
-  } catch (error) {
-    //console.error(error);
-    return Promise.reject(error);
+    return Promise.resolve(g.gamePath);
+  } catch (e) {
+    return Promise.reject(e);
   }
-
-  /*
-  return util.GameStoreHelper.findByAppId([MSAPP_ID, STEAM_ID]).then((game: IGameStoreEntry) => {
-    GAME_STORE_ID = game.gameStoreId;
-    GAME_ROOT_PATH = game.gamePath;
-    return game.gamePath;
-  });*/
 }
 
 function GetVortexProperties(
@@ -459,23 +386,14 @@ function GetVortexProperties(
     profileId !== undefined
       ? selectors.profileById(state, profileId)
       : selectors.activeProfile(state);
-
-  if (profile?.gameId !== GAME_ID) {
-    return undefined;
-  }
-
+  if (profile?.gameId !== GAME_ID) return undefined;
   const discovery: types.IDiscoveryResult = util.getSafe(
     state,
-    ["settings", "gameMode", "discovered", GAME_ID],
+    ['settings', 'gameMode', 'discovered', GAME_ID],
     undefined,
   );
-  if (discovery?.path === undefined) {
-    return undefined;
-  }
-
-  const tempMods = util.getSafe(state, ["persistent", "mods", GAME_ID], {});
-  const mods = tempMods;
-
+  if (discovery?.path === undefined) return undefined;
+  const mods = util.getSafe(state, ['persistent', 'mods', GAME_ID], {});
   return { api, state, profile, mods, discovery };
 }
 

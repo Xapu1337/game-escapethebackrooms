@@ -1,7 +1,7 @@
 import path from "path";
 import * as VortexUtils from "./VortexUtils";
 import { types, log, actions, fs, selectors, util } from "vortex-api";
-import { GAME_ID, MODSFOLDER_PATH } from './common';
+import { GAME_ID, MODSFOLDER_PATH, MODTYPE_PAK } from './common';
 import semver from "semver";
 
 async function migrate0_2_11(context: types.IExtensionContext, oldversion: string) {
@@ -72,7 +72,7 @@ async function migrate0_2_11(context: types.IExtensionContext, oldversion: strin
 
       log("debug", `Changing mod type: ${mod.attributes.name}`);
       const dispatch = context.api.store?.dispatch;
-      dispatch(actions.setModType(GAME_ID, mod.id, "hogwarts-PAK-modtype"));
+      dispatch(actions.setModType(GAME_ID, mod.id, MODTYPE_PAK));
     } catch (err) {
       log("error", `Error checking mod ${mod.id}`, err);
     }
@@ -120,7 +120,6 @@ export default async function Migrate(context: types.IExtensionContext, oldVersi
   if (Object.keys(mods).length === 0) {
     log("info", "mods length is 0 so no reason to migrate anything");
     return Promise.resolve();
-    3283;
   }
 
   const modsPath = path.join(discoveryPath, MODSFOLDER_PATH);

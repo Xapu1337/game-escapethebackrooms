@@ -1,0 +1,100 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (vX.Y.Z)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF##*/}" == v* ]]; then
+            echo "tag=${GITHUB_REF##*/}" >> $GITHUB_OUTPUT
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=v0.0.0-unknown" >> $GITHUB_OUTPUT
+          fi
+      - name: Archive dist
+        run: |
+          cd dist
+          zip -r "../extension-${{ steps.ver.outputs.tag }}.zip" .
+
+      - name: Generate checksum
+        run: |
+          sha256sum "extension-${{ steps.ver.outputs.tag }}.zip" > "extension-${{ steps.ver.outputs.tag }}.sha256"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Sign artifact (cosign keyless if no key provided)
+        run: |
+          if [ -n "${COSIGN_KEY}" ]; then
+            echo "Signing with provided key"
+            cosign sign-blob --key env://COSIGN_KEY --output-signature "extension-${{ steps.ver.outputs.tag }}.sig" "extension-${{ steps.ver.outputs.tag }}.zip"
+          else
+            echo "Keyless signing (OIDC)"
+            cosign sign-blob --output-signature "extension-${{ steps.ver.outputs.tag }}.sig" "extension-${{ steps.ver.outputs.tag }}.zip"
+          fi
+        env:
+          COSIGN_EXPERIMENTAL: 1
+
+      - name: Upload artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: etb-vortex-extension
+          path: |
+            extension-${{ steps.ver.outputs.tag }}.zip
+            extension-${{ steps.ver.outputs.tag }}.sha256
+            extension-${{ steps.ver.outputs.tag }}.sig
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: etb-vortex-extension
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name != '' && github.ref_name || inputs.version }}
+          name: ${{ github.ref_name != '' && github.ref_name || inputs.version }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/extension-*.zip
+            artifacts/extension-*.sha256
+            artifacts/extension-*.sig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
