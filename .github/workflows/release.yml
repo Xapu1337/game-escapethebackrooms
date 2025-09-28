@@ -34,13 +34,28 @@ jobs:
       - name: Determine version
         id: ver
         run: |
-          if [[ "${GITHUB_REF##*/}" == v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "tag=${GITHUB_REF##*/}" >> $GITHUB_OUTPUT
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
             echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           else
             echo "tag=v0.0.0-unknown" >> $GITHUB_OUTPUT
           fi
+
+      - name: Validate package.json version matches tag (if semantic)
+        if: startsWith(steps.ver.outputs.tag, 'v') || startsWith(steps.ver.outputs.tag, '0')
+        run: |
+          sudo apt-get update -y >/dev/null 2>&1 || true
+          sudo apt-get install -y jq >/dev/null 2>&1 || true
+          PKG_VER=$(jq -r .version package.json)
+          TAG=${{ steps.ver.outputs.tag }}
+          # Strip leading v if present
+          TAG_STRIPPED=${TAG#v}
+          if [[ "$PKG_VER" != "$TAG_STRIPPED" ]]; then
+            echo "Package version ($PKG_VER) does not match tag ($TAG)." >&2
+            exit 1
+          fi
+          echo "Version check passed: $PKG_VER == $TAG_STRIPPED"
       - name: Archive dist
         run: |
           cd dist
@@ -57,13 +72,14 @@ jobs:
         run: |
           if [ -n "${COSIGN_KEY}" ]; then
             echo "Signing with provided key"
-            cosign sign-blob --key env://COSIGN_KEY --output-signature "extension-${{ steps.ver.outputs.tag }}.sig" "extension-${{ steps.ver.outputs.tag }}.zip"
+            cosign sign-blob --yes --key env://COSIGN_KEY --output-signature "extension-${{ steps.ver.outputs.tag }}.sig" "extension-${{ steps.ver.outputs.tag }}.zip"
           else
             echo "Keyless signing (OIDC)"
-            cosign sign-blob --output-signature "extension-${{ steps.ver.outputs.tag }}.sig" "extension-${{ steps.ver.outputs.tag }}.zip"
+            cosign sign-blob --yes --output-signature "extension-${{ steps.ver.outputs.tag }}.sig" "extension-${{ steps.ver.outputs.tag }}.zip"
           fi
         env:
           COSIGN_EXPERIMENTAL: 1
+          COSIGN_YES: 1
 
       - name: Upload artifact bundle
         uses: actions/upload-artifact@v4
