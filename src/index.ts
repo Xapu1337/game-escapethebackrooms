@@ -22,7 +22,7 @@ import {
   INSTALLER_MOVIES,
   INSTALLER_BP_LUA,
 } from './common';
-import ensureUE4SS from './util/ue4ssDownloader';
+import installOrUpdateUE4SS, { uninstallUE4SS, isUE4SSInstalledSync, getUE4SSVersionSync } from './util/ue4ssDownloader';
 import ETBMovieInstaller from './installers/etb-installer-movies';
 import ETBBluePrintOrLuaInstaller from './installers/etb-installer-bp-lua';
 import ETBMoviesModType from './modtypes/etb-modtype-movies';
@@ -33,15 +33,23 @@ let monitor: LuaModsMonitor;
 
 const LOADORDER_FILE = 'loadOrder.json';
 const VERSION_PATH = path.join('EscapeTheBackrooms', 'Content', 'Data', 'Version', 'DA_Version.txt');
+let sessionUE4SSNotified = false;
+let sessionUE4SSSuppressed = false;
+let ue4ssNotificationId: string | undefined;
 
 async function getGameVersion(discoveryPath: string) {
-  const fullPath = path.join(discoveryPath, VERSION_PATH);
-  try {
-    const contents = await fs.readFileAsync(fullPath, { encoding: 'utf8' });
-    return Promise.resolve(contents);
-  } catch (error) {
-    return Promise.reject(error);
+  // Try both with and without the extra game folder in case discovery already points at the project folder
+  const candidates = [
+    path.join(discoveryPath, VERSION_PATH),
+    path.join(discoveryPath, 'Content', 'Data', 'Version', 'DA_Version.txt'),
+  ];
+  for (const fp of candidates) {
+    try {
+      const contents = await fs.readFileAsync(fp, { encoding: 'utf8' });
+      if (contents) return contents.trim();
+    } catch { /* try next */ }
   }
+  return 'unknown';
 }
 
 // async function OnWillDeploy(
@@ -73,6 +81,38 @@ function main(context: types.IExtensionContext) {
   setupReactiveHooks(context);
 
   return true;
+}
+
+function notifyIfUE4SSMissing(context: types.IExtensionContext, _source: 'activation' | 'deploy') {
+  try {
+    if (sessionUE4SSNotified || sessionUE4SSSuppressed) return;
+    const st = context.api.getState();
+    const gameId = selectors.activeGameId(st);
+    if (gameId !== GAME_ID) return;
+    const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
+    if (!gp) return;
+    if (isUE4SSInstalledSync(context)) return;
+    sessionUE4SSNotified = true; // ensure single notification this session unless user installs later
+    const notif = {
+      type: 'warning',
+      message: 'UE4SS is not installed – Lua/Blueprint mods will not function.',
+      actions: [
+        {
+          title: 'Install UE4SS',
+          action: () => installOrUpdateUE4SS(context).catch(e => log('error', 'UE4SS install via notification failed', e)),
+        },
+        {
+          title: "Don't show again",
+          action: () => {
+            sessionUE4SSSuppressed = true;
+            if (ue4ssNotificationId) { (context.api as any).dismissNotification?.(ue4ssNotificationId); }
+          },
+        },
+      ],
+    } as any;
+    const ret = context.api.sendNotification?.(notif) as any;
+    ue4ssNotificationId = ret?.id || ret;
+  } catch { /* ignore */ }
 }
 
 function registerGame(context: types.IExtensionContext) {
@@ -200,14 +240,30 @@ function registerActions(context: types.IExtensionContext) {
     () => selectors.activeGameId(context.api.getState()) === GAME_ID,
   );
 
+  // Consolidated UE4SS submenu action
   context.registerAction(
     'mod-icons',
     125,
     'download',
     {},
-    'Install / Update UE4SS',
+    'UE4SS',
     () => {
-      void ensureUE4SS(context).catch((err) => log('error', 'UE4SS download failed', err));
+      const installed = isUE4SSInstalledSync(context);
+      const version = installed ? (getUE4SSVersionSync(context) || 'unknown') : 'N/A';
+      const msg = installed
+        ? `UE4SS detected. Version file reports: ${version}. Choose an action below.`
+        : 'UE4SS not currently installed. Choose Install to download the latest release.';
+
+      const buttons: any[] = [];
+      if (!installed) {
+        buttons.push({ label: 'Install', action: () => void installOrUpdateUE4SS(context).catch(e => log('error', 'UE4SS install failed', e)) });
+      } else {
+        buttons.push({ label: 'Update', action: () => void installOrUpdateUE4SS(context).catch(e => log('error', 'UE4SS update failed', e)) });
+        buttons.push({ label: 'Force Reinstall', action: () => void installOrUpdateUE4SS(context, true).catch(e => log('error', 'UE4SS force reinstall failed', e)) });
+        buttons.push({ label: 'Uninstall', action: () => void uninstallUE4SS(context).catch(e => log('error', 'UE4SS uninstall failed', e)) });
+      }
+      buttons.push({ label: 'Close' });
+      context.api.showDialog('question', 'UE4SS Management', { text: msg }, buttons);
     },
     () => selectors.activeGameId(context.api.getState()) === GAME_ID,
   );
@@ -221,11 +277,29 @@ function setupReactiveHooks(context: types.IExtensionContext) {
       if (g === GAME_ID) return monitor.start();
       return monitor.stop();
     });
+    context.api.events.on('gamemode-activated', async (g) => {
+      if (g !== GAME_ID) return;
+      const st = context.api.getState();
+      const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
+      if (!gp) return;
+      const modsDir = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
+      try {
+        await fs.ensureDirWritableAsync(modsDir).catch(() => undefined);
+        const modsTxt = path.join(modsDir, 'Mods.txt');
+        const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
+        if (!exists) {
+          await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
+        }
+      } catch { /* ignore */ }
+      // First activation notification (async, non-blocking)
+      notifyIfUE4SSMissing(context, 'activation');
+    });
     context.api.events.on('will-deploy', () => monitor.pause());
     context.api.events.on('will-purge', () => monitor.pause());
     context.api.events.on('did-deploy', () => {
       monitor.resume();
       refreshLuaMods(context.api);
+      notifyIfUE4SSMissing(context, 'deploy');
     });
     context.api.events.on('did-purge', () => {
       monitor.resume();
@@ -253,14 +327,7 @@ function setupReactiveHooks(context: types.IExtensionContext) {
       const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
       if (!gp) return;
 
-      const modsPath = path.join(
-        gp,
-        'EscapeTheBackrooms',
-        'Binaries',
-        'Win64',
-        'Mods',
-        'Mods.txt',
-      );
+      const modsPath = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods', 'Mods.txt');
       monitor.pause();
       writeManifest(currLO, modsPath)
         .catch((err) => log('error', 'Could not write LUA manifest', err))
@@ -352,6 +419,12 @@ async function setup(discovery: types.IDiscoveryResult) {
   const p = path.join(discovery.path, MODSFOLDER_PATH);
   try {
     await fs.ensureDirWritableAsync(p);
+    // also ensure Mods folder structure for Lua (avoid ENOENT later)
+    const modsDir = path.join(discovery.path, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
+    await fs.ensureDirWritableAsync(modsDir).catch(() => undefined);
+    const modsTxt = path.join(modsDir, 'Mods.txt');
+    const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
+    if (!exists) await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
     return Promise.resolve;
   } catch (e) {
     return Promise.reject(e);

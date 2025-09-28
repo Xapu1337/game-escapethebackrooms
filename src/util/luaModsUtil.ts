@@ -20,8 +20,8 @@ export class LuaModsMonitor {
     public paused: boolean;
     private API: types.IExtensionApi;
     private updateDebouncer = new util.Debouncer(
-        async (eventname: 'change' | 'rename', filename: string) => { this.fileChanged(eventname, filename) }, 
-        2000, 
+        async (eventname: 'change' | 'rename', filename: string) => { this.fileChanged(eventname, filename) },
+        2000,
         true
     );
 
@@ -37,42 +37,37 @@ export class LuaModsMonitor {
         const discoveryPath = state.settings.gameMode.discovered['escapethebackrooms']?.path ?? undefined;
         if (!discoveryPath) throw new Error('Escape The Backrooms is not discovered!');
         const luaModsPath = path.join(discoveryPath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
-
-        // Check it exists
+        // Ensure directory & seed Mods.txt so watcher always attaches
         try {
-            await fs.statAsync(luaModsPath);
-            // Set up the watcher
+            await fs.ensureDirWritableAsync(luaModsPath).catch(() => undefined);
+            const modsTxt = path.join(luaModsPath, 'Mods.txt');
+            const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
+            if (!exists) {
+                await fs.writeFileAsync(modsTxt, '; Lua Mods Load Order\n', { encoding: 'utf8' }).catch(() => undefined);
+            }
+        } catch (e) {
+            log('warn', 'Unable to prepare Lua Mods directory', e);
+        }
+
+        try {
             this.watcher = fs.watch(
                 luaModsPath,
                 (eventname: 'change' | 'rename', filename: string) => this.updateDebouncer.schedule(undefined, eventname, filename)
             );
-
-            // keep an eye out for errors
             this.watcher.on('error', async (error) => {
-                
-                // if this is permission error, it may well be when we purge
-                if(error.message.startsWith('EPERM')) {
-
-                    // check to see if lua mods folder exists, if it doesn't (expected) then just debug it
-                    try{                        
-                        await fs.statAsync(luaModsPath); 
-                        log('error', error.message);
-                    } catch {
-                        log('debug', error.message);
-                    }
-
+                if (error.message.startsWith('EPERM')) {
+                    try { await fs.statAsync(luaModsPath); log('error', error.message); } catch { log('debug', error.message); }
                 } else {
-                    // any other error just catch and log in vortex
-                    log('error', error.message);
-                }                
+                    log('error', 'Lua mods watcher error', error);
+                }
             });
-        }   
-        catch(err) {
-            if (err.code === 'ENOENT') log('debug', 'Lua mods folder does not exist yet.');
-            else log('warn', 'Could not monitor lua mods folder', err);
+        } catch (err) {
+            if (err.code === 'ENOENT') log('debug', 'Lua mods folder still missing after ensure (race)');
+            else log('warn', 'Could not start lua mods watcher', err);
         }
 
-        
+        // Initial population
+        try { await refreshLuaMods(this.API); } catch { /* ignore */ }
 
     }
 
@@ -108,7 +103,7 @@ export async function openLuaModsFolder(api: types.IExtensionApi) {
     try {
         util.opn(luaModsPath);
     }
-    catch(err) {
+    catch (err) {
         log('error', 'Could not open Lua Mods Folder', { luaModsPath, err });
     }
 }
@@ -116,7 +111,7 @@ export async function openLuaModsFolder(api: types.IExtensionApi) {
 export async function refreshLuaMods(api: types.IExtensionApi) {
     const state = api.getState();
     const profile: types.IProfile | undefined = selectors.activeProfile(api.getState());
-    if (!profile|| profile.gameId !== GAME_ID) return;
+    if (!profile || profile.gameId !== GAME_ID) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stateLoadOrder = (state.session as any).lualoadorder?.[profile.id] || [];
     const gamePath: string | undefined = state.settings.gameMode.discovered['escapethebackrooms']?.path || undefined;
@@ -126,26 +121,21 @@ export async function refreshLuaMods(api: types.IExtensionApi) {
         return;
     }
     const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
+    // Ensure directory & Mods.txt exist
+    try { await fs.ensureDirWritableAsync(luaModsPath).catch(() => undefined); } catch { /* ignore */ }
+    const modsTxtPath = path.join(luaModsPath, 'Mods.txt');
+    const modsTxtExists = await fs.statAsync(modsTxtPath).then(() => true).catch(() => false);
+    if (!modsTxtExists) {
+        try { await fs.writeFileAsync(modsTxtPath, '; Lua Mods Load Order\n', { encoding: 'utf8' }); } catch { /* ignore */ }
+    }
     // Get a list of folders.
-    let folderList = [];
-    try {
-        folderList = await getFolders(luaModsPath);
-    }
-    catch(err) {
-        log('error', 'Could not refresh logic mods', err);
-    }
+    const folderList = await getFolders(luaModsPath).catch(() => []);
     // Parse the Mods.txt file and filter out any missing entries.
-    let savedLoadOrder = [];
-    try {
-        savedLoadOrder = (await parseManifest(path.join(luaModsPath, 'Mods.txt')))
+    const savedLoadOrder = (await parseManifest(modsTxtPath))
         .filter(entry => !!folderList.find(f => f.toLowerCase() === entry.folderName.toLowerCase()));
-    }
-    catch(err) {
-        log('error', 'Could not get mods.txt data', err);
-    }
     // Find any new mods
     const newEntries: ILuaMod[] = folderList.filter(f => !savedLoadOrder.find(e => e.folderName.toLowerCase() === f.toLowerCase()))
-    .map(m => ({ enabled: true, folderName: m, index: -1 }));
+        .map(m => ({ enabled: true, folderName: m, index: -1 }));
     // Combine and index
     const newLoadOrder = [...savedLoadOrder, ...newEntries].map((entry, index) => ({ ...entry, index }));
 
@@ -178,15 +168,16 @@ async function getFolders(modsPath: string): Promise<string[]> {
                 if (folder.toLowerCase() === 'shared') continue;
                 if (stats.isDirectory()) validFolders.push(folder);
             }
-            catch(err) {
+            catch (err) {
                 log('warn', 'Error in directroy check', err);
             }
         }
         return validFolders;
     }
-    catch(err) {
-        log('error', 'Error getting folder list for logic mods load order', err);
-        return[];
+    catch (err) {
+        if (err.code === 'ENOENT') return [];
+        log('warn', 'Issue listing logic mods folder', err);
+        return [];
     }
 }
 
@@ -204,12 +195,12 @@ async function parseManifest(filePath: string): Promise<ILuaMod[]> {
                 return prev;
             };
             prev.push({ folderName, enabled: enabledNumber === 1 ? true : false, index });
-            return prev;        
+            return prev;
         }, []);
         return mods;
     }
-    catch(err) {
-        log('error', 'Could not parse logic mods manifest', err);
+    catch (err) {
+        if (err.code !== 'ENOENT') log('warn', 'Could not parse logic mods manifest', err);
         return [];
     }
 }
@@ -220,15 +211,14 @@ export async function writeManifest(loadOrder: ILuaModLoadOrder, filePath: strin
             prev.push({ folderName: cur, enabled: loadOrder[cur].enabled, index: loadOrder[cur].index ?? 999 })
         }
         return prev;
-    }, []).sort((a,b) => a.index >= b.index ? 1 : -1);
+    }, []).sort((a, b) => a.index >= b.index ? 1 : -1);
     const data = loFiltered.map(e => `${e.folderName} : ${e.enabled ? 1 : 0}`).join('\n');
     const keybindsEnabled = loadOrder[Object.keys(loadOrder).find(k => k.toLowerCase() === 'keybinds')]?.enabled || false;
     const document = `; Lua Mods Load order generated by Vortex\r\n${data}\r\n\r\n; Built-in keybinds, do not move up!\r\nKeybinds : ${keybindsEnabled ? 1 : 0}`;
     try {
-        const exists = await fs.statAsync(filePath).then(() => true).catch(() => false);
-        if(exists) await fs.writeFileAsync(filePath, document);
+        await fs.writeFileAsync(filePath, document).catch(() => undefined);
     }
-    catch(err) {
+    catch (err) {
         log('error', 'Unable to write load order file!', err);
     }
 }

@@ -24,7 +24,6 @@ export const INSTALLER_BP_LUA = 'etb-installer-bp-lua';
 
 // UE4SS expected markers (simplified detection). These are typical files delivered by UE4SS.
 export const UE4SS_CORE_DLL = 'UE4SS.dll';
-export const UE4SS_XINPUT_DLL = 'xinput1_3.dll'; // XInput hook variant
 export const UE4SS_FOLDER = 'UE4SS';
 
 export const UE4_VERSION = '4.27';

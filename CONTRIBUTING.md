@@ -21,11 +21,6 @@ Thank you for considering a contribution. This project aims to keep the Escape T
 Format: `<type>: <short summary>` (e.g. `fix: handle empty load order file`).
 Types: feat, fix, refactor, chore, docs, build.
 
-### Pull Requests
-- Describe the problem & solution succinctly.
-- Include before/after behavioral notes if user-facing.
-- Keep PRs focused; unrelated cleanup should be separate.
-
 ### Testing
 Currently no automated test suite. Manual validation:
 - Build succeeds.
