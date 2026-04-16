@@ -10,8 +10,20 @@ const LOGIC_PATH = path.join('EscapeTheBackrooms', 'Content', 'Paks', 'LogicMods
 const ETBBluePrintOrLuaInstaller = { test: detect, install };
 
 async function detect(files: string[], gameId: string): Promise<types.ISupportedResult> {
-  const relevant = files.filter(f => path.extname(f).toLowerCase() === LUA_EXT || IGNORE_CONFLICTS.includes(path.basename(f).toLowerCase()));
-  return { supported: gameId === GAME_ID && relevant.length > 0, requiredFiles: [] };
+  if (gameId !== GAME_ID) return { supported: false, requiredFiles: [] };
+  const hasLua = files.some(f => path.extname(f).toLowerCase() === LUA_EXT);
+  const hasMarker = files.some(f => IGNORE_CONFLICTS.includes(path.basename(f).toLowerCase()));
+  const hasPak = files.some(f => PAK_EXTENSIONS.includes(path.extname(f).toLowerCase()));
+  // Match if: has lua files, has marker files, or has ONLY pak files (blueprint mod without markers)
+  if (hasLua || hasMarker) return { supported: true, requiredFiles: [] };
+  // For pak-only archives: check there are no other game-content files that would indicate a regular content pak
+  if (hasPak) {
+    const contentExts = ['.uasset', '.umap', '.uexp', '.ubulk', '.upluginmanifest'];
+    const hasContentFiles = files.some(f => contentExts.includes(path.extname(f).toLowerCase()));
+    // If the archive has only pak/ucas/utoc files (+ txt/md/etc), treat as blueprint mod
+    if (!hasContentFiles) return { supported: true, requiredFiles: [] };
+  }
+  return { supported: false, requiredFiles: [] };
 }
 
 async function install(files: string[]): Promise<types.IInstallResult> {

@@ -137,7 +137,18 @@ export async function refreshLuaMods(api: types.IExtensionApi) {
     const newEntries: ILuaMod[] = folderList.filter(f => !savedLoadOrder.find(e => e.folderName.toLowerCase() === f.toLowerCase()))
         .map(m => ({ enabled: true, folderName: m, index: -1 }));
     // Combine and index
-    const newLoadOrder = [...savedLoadOrder, ...newEntries].map((entry, index) => ({ ...entry, index }));
+    let newLoadOrder = [...savedLoadOrder, ...newEntries].map((entry, index) => ({ ...entry, index }));
+
+    // Auto-enable BPModLoaderMod when blueprint .pak files exist in LogicMods
+    const logicModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Content', 'Paks', 'LogicMods');
+    const hasLogicMods = await hasLogicModPaks(logicModsPath);
+    if (hasLogicMods) {
+        newLoadOrder = newLoadOrder.map(entry =>
+            entry.folderName.toLowerCase() === 'bpmodloadermod'
+                ? { ...entry, enabled: true }
+                : entry
+        );
+    }
 
     const loadOrderObject: ILuaModLoadOrder = newLoadOrder.reduce((prev, cur, index) => {
         prev[cur.folderName] = { enabled: cur.enabled, index };
@@ -155,6 +166,15 @@ function hasLoadOrderChanged(oldLo: ILuaModLoadOrder, newLo: ILuaModLoadOrder): 
     const newString = JSON.stringify(newLo);
     if (oldString == newString) return false;
     else return true;
+}
+
+async function hasLogicModPaks(logicModsPath: string): Promise<boolean> {
+    try {
+        const files = await fs.readdirAsync(logicModsPath);
+        return files.some((f: string) => path.extname(f).toLowerCase() === '.pak');
+    } catch {
+        return false;
+    }
 }
 
 async function getFolders(modsPath: string): Promise<string[]> {

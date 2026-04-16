@@ -28,3 +28,9 @@ export const UE4SS_FOLDER = 'UE4SS';
 
 export const UE4_VERSION = '4.27';
 export const UE4SS_GITHUB_API = 'https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases/latest';
+export const UE4SS_GITHUB_RELEASES_API = 'https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases';
+export const ETB_UE4SS_GITHUB_API = 'https://api.github.com/repos/ETBCommunity/UE4SS/releases/latest';
+
+// Nexus mod IDs for recommended alternatives
+export const ETB_UE4SS_NEXUS_MOD_ID = 138;
+export const INTERPOSE_NEXUS_MOD_ID = 7;

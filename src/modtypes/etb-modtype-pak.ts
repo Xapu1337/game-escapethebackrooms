@@ -19,13 +19,16 @@ async function detect(instructions: types.IInstruction[]): Promise<boolean> {
     const s = i.source?.toLowerCase();
     return s?.endsWith('.lua') || s?.endsWith('ue4sslogicmod.info') || s?.endsWith('.ue4sslogicmod') || s?.endsWith('.logicmod');
   });
-  return !excluded;
+  if (excluded) return false;
+  // Exclude mods already routed to LogicMods by the BP/Lua installer
+  const targetsLogicMods = copies.some(i => i.destination?.toLowerCase().includes('logicmods'));
+  return !targetsLogicMods;
 }
 
 function merge(mod: types.IMod, context: types.IExtensionContext): string {
   const props = getProps(context);
   if (!props) return 'ZZZZ-' + mod.id;
-  const loadOrder = util.getSafe(props.state, ['persistent','loadOrder', props.profile.id], []);
+  const loadOrder = util.getSafe(props.state, ['persistent', 'loadOrder', props.profile.id], []);
   const idx = loadOrder.findIndex((lo: any) => lo.id === mod.id);
   if (mod.type === MODTYPE_MOVIES) return '';
   const prefix = makePrefix(idx);
@@ -42,9 +45,9 @@ function getProps(context: types.IExtensionContext, profileId?: string): IProps 
   const api = context.api; const state = api.getState();
   const profile: types.IProfile = profileId ? selectors.profileById(state, profileId) : selectors.activeProfile(state);
   if (profile?.gameId !== GAME_ID) return undefined;
-  const discovery = util.getSafe(state, ['settings','gameMode','discovered', GAME_ID], undefined) as types.IDiscoveryResult | undefined;
+  const discovery = util.getSafe(state, ['settings', 'gameMode', 'discovered', GAME_ID], undefined) as types.IDiscoveryResult | undefined;
   if (!discovery || !discovery.path) return undefined;
-  const mods = util.getSafe(state, ['persistent','mods', GAME_ID], {});
+  const mods = util.getSafe(state, ['persistent', 'mods', GAME_ID], {});
   return { api, state, profile, mods, discovery };
 }
 

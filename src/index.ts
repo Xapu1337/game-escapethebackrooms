@@ -21,8 +21,17 @@ import {
   MODTYPE_PAK,
   INSTALLER_MOVIES,
   INSTALLER_BP_LUA,
+  ETB_UE4SS_NEXUS_MOD_ID,
+  INTERPOSE_NEXUS_MOD_ID,
 } from './common';
-import installOrUpdateUE4SS, { uninstallUE4SS, isUE4SSInstalledSync, getUE4SSVersionSync } from './util/ue4ssDownloader';
+import installOrUpdateUE4SS, {
+  uninstallUE4SS, isUE4SSInstalledSync, getUE4SSVersionSync,
+  fetchUE4SSReleases, installSpecificUE4SSRelease,
+  isETBUE4SSInstalled, isInterposeInstalled,
+  installETBUE4SS, installInterpose,
+  removeVortexMod,
+  IUE4SSGitHubRelease,
+} from './util/ue4ssDownloader';
 import ETBMovieInstaller from './installers/etb-installer-movies';
 import ETBBluePrintOrLuaInstaller from './installers/etb-installer-bp-lua';
 import ETBMoviesModType from './modtypes/etb-modtype-movies';
@@ -247,26 +256,155 @@ function registerActions(context: types.IExtensionContext) {
     'download',
     {},
     'UE4SS',
-    () => {
-      const installed = isUE4SSInstalledSync(context);
-      const version = installed ? (getUE4SSVersionSync(context) || 'unknown') : 'N/A';
-      const msg = installed
-        ? `UE4SS detected. Version file reports: ${version}. Choose an action below.`
-        : 'UE4SS not currently installed. Choose Install to download the latest release.';
-
-      const buttons: any[] = [];
-      if (!installed) {
-        buttons.push({ label: 'Install', action: () => void installOrUpdateUE4SS(context).catch(e => log('error', 'UE4SS install failed', e)) });
-      } else {
-        buttons.push({ label: 'Update', action: () => void installOrUpdateUE4SS(context).catch(e => log('error', 'UE4SS update failed', e)) });
-        buttons.push({ label: 'Force Reinstall', action: () => void installOrUpdateUE4SS(context, true).catch(e => log('error', 'UE4SS force reinstall failed', e)) });
-        buttons.push({ label: 'Uninstall', action: () => void uninstallUE4SS(context).catch(e => log('error', 'UE4SS uninstall failed', e)) });
-      }
-      buttons.push({ label: 'Close' });
-      context.api.showDialog('question', 'UE4SS Management', { text: msg }, buttons);
-    },
+    () => { showUE4SSHubDialog(context).catch(e => log('error', 'UE4SS dialog error', e)); },
     () => selectors.activeGameId(context.api.getState()) === GAME_ID,
   );
+}
+
+// ── UE4SS Management Dialogs ──
+
+async function showUE4SSHubDialog(context: types.IExtensionContext): Promise<void> {
+  const stdInstalled = isUE4SSInstalledSync(context);
+  const stdVersion = stdInstalled ? (getUE4SSVersionSync(context) || 'unknown') : null;
+  const etbInstalled = isETBUE4SSInstalled(context);
+  const interposeInstalled = isInterposeInstalled(context);
+
+  const statusParts: string[] = [];
+  if (stdInstalled) statusParts.push(`Standard UE4SS ${stdVersion}`);
+  if (etbInstalled) statusParts.push('ETB UE4SS');
+  if (interposeInstalled) statusParts.push('Interpose');
+  const statusLine = statusParts.length
+    ? 'Installed: ' + statusParts.join(', ')
+    : 'No UE4SS variant is currently installed.';
+
+  const anyInstalled = stdInstalled || etbInstalled || interposeInstalled;
+
+  const choices = [
+    { id: 'standard', text: 'Standard UE4SS (select version from GitHub)', value: false },
+    { id: 'etb', text: 'ETB UE4SS (Recommended) — optimized fork for ETB', value: true },
+    { id: 'interpose', text: 'Interpose — additional mod loader', value: false },
+  ];
+
+  const btns: any[] = [{ label: 'Continue' }];
+  if (anyInstalled) btns.push({ label: 'Uninstall...' });
+  btns.push({ label: 'Close' });
+
+  const result = await context.api.showDialog(
+    'question',
+    'UE4SS Management',
+    { text: statusLine, choices },
+    btns,
+  );
+
+  if (result.action === 'Close') return;
+
+  if (result.action === 'Uninstall...') {
+    return showUninstallDialog(context, stdInstalled, etbInstalled, interposeInstalled);
+  }
+
+  // Find which choice is selected
+  const selected = Object.entries(result.input || {}).find(([, v]) => v === true)?.[0];
+
+  if (selected === 'standard') {
+    return showVersionPickerDialog(context);
+  } else if (selected === 'etb') {
+    try {
+      await installETBUE4SS(context);
+    } catch (e) {
+      context.api.showErrorNotification('Failed to download ETB UE4SS', e);
+    }
+  } else if (selected === 'interpose') {
+    installInterpose(context);
+  }
+}
+
+async function showVersionPickerDialog(context: types.IExtensionContext): Promise<void> {
+  let releases: IUE4SSGitHubRelease[];
+  try {
+    releases = await fetchUE4SSReleases(10);
+  } catch (e) {
+    context.api.showErrorNotification('Failed to fetch UE4SS releases', e);
+    return;
+  }
+  if (!releases.length) {
+    context.api.showErrorNotification('No UE4SS releases found', 'GitHub returned no releases with downloadable assets.');
+    return;
+  }
+
+  const currentVersion = getUE4SSVersionSync(context);
+  const choices = releases.map((r, i) => {
+    let label = r.tag_name;
+    if (currentVersion && r.tag_name === currentVersion) label += ' (installed)';
+    if (i === 0) label += ' [latest]';
+    return { id: r.tag_name, text: label, value: i === 0 };
+  });
+
+  const result = await context.api.showDialog(
+    'question',
+    'Select UE4SS Version',
+    { text: 'Pick a version to install. The latest release is pre-selected.', choices },
+    [{ label: 'Install' }, { label: 'Back' }, { label: 'Cancel' }],
+  );
+
+  if (result.action === 'Cancel') return;
+  if (result.action === 'Back') return showUE4SSHubDialog(context);
+
+  const selectedTag = Object.entries(result.input || {}).find(([, v]) => v === true)?.[0];
+  const selectedRelease = releases.find(r => r.tag_name === selectedTag);
+  if (!selectedRelease) {
+    context.api.showErrorNotification('No version selected', 'Please select a version before clicking Install.');
+    return;
+  }
+
+  try {
+    await installSpecificUE4SSRelease(context, selectedRelease);
+  } catch (e) {
+    context.api.showErrorNotification('Failed to install UE4SS ' + selectedRelease.tag_name, e);
+  }
+}
+
+async function showUninstallDialog(
+  context: types.IExtensionContext,
+  stdInstalled: boolean,
+  etbInstalled: boolean,
+  interposeInstalled: boolean,
+): Promise<void> {
+  const choices: any[] = [];
+  if (stdInstalled) choices.push({ id: 'standard', text: 'Standard UE4SS (direct install)', value: true });
+  if (etbInstalled) choices.push({ id: 'etb', text: 'ETB UE4SS (Vortex mod)', value: false });
+  if (interposeInstalled) choices.push({ id: 'interpose', text: 'Interpose (Vortex mod)', value: false });
+
+  if (!choices.length) {
+    await context.api.showDialog('info', 'Nothing to uninstall', { text: 'No UE4SS variants are currently installed.' }, [{ label: 'OK' }]);
+    return;
+  }
+
+  const result = await context.api.showDialog(
+    'question',
+    'Uninstall UE4SS Components',
+    { text: 'Select which components to remove.', choices },
+    [{ label: 'Uninstall Selected' }, { label: 'Back' }, { label: 'Cancel' }],
+  );
+
+  if (result.action === 'Cancel') return;
+  if (result.action === 'Back') return showUE4SSHubDialog(context);
+
+  const selected = result.input || {};
+  const errors: string[] = [];
+
+  if (selected['standard']) {
+    try { await uninstallUE4SS(context); } catch (e) { errors.push('Standard UE4SS: ' + e); }
+  }
+  if (selected['etb']) {
+    try { await removeVortexMod(context, ETB_UE4SS_NEXUS_MOD_ID, 'ETB UE4SS'); } catch (e) { errors.push('ETB UE4SS: ' + e); }
+  }
+  if (selected['interpose']) {
+    try { await removeVortexMod(context, INTERPOSE_NEXUS_MOD_ID, 'Interpose'); } catch (e) { errors.push('Interpose: ' + e); }
+  }
+
+  if (errors.length) {
+    context.api.showErrorNotification('Some components failed to uninstall', errors.join('\n'));
+  }
 }
 
 function setupReactiveHooks(context: types.IExtensionContext) {
