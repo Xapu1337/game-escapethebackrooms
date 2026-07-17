@@ -1,4 +1,4 @@
-# Escape The Backrooms – Vortex Extension
+# Escape The Backrooms, Vortex Extension
 
 This is an extension for [Vortex](https://www.nexusmods.com/about/vortex/) to add support for Escape The Backrooms. This is available for the PC on [Steam](https://store.steampowered.com/app/1943950/Escape_the_Backrooms/)
 
@@ -44,9 +44,14 @@ Vortex will deploy files to the game's mod folder (`/EscapeTheBackrooms/Content/
 
 This extension also supports mods that overwrite the game's movie files, located within subfolders under `/EscapeTheBackrooms/Content/Movies`. When a mod is added that contains at least 1 `.bk2` file, the `etb-modtype-movies` installer is used. This searches through the movies folder within the game and attempts to match anything that matches inside of the mod archive. If found, Vortex overwrites them (after backing up the originals) and if any `pak` files are also found within a movie mod, then these are processed the same as a pak-only mod.
 
-## UE4SS Auto Install
+## Mod Loader Install
 
-An action ("Install / Update UE4SS") is available in the Mods toolbar to automatically download and extract the latest UE4SS build (GitHub latest release) directly into the game directory if it's not already present. Use this if you intend to install Blueprint/Lua logic mods. If you already have a customised UE4SS install, back it up before using the action.
+A "Mod Loader" action is available in the Mods toolbar to install the loader(s) required for Blueprint/Lua logic mods. You can choose either one or both of:
+
+- **ETB UE4SS** — an ETB-specific UE4SS fork. Vortex downloads the latest GitHub release and extracts it directly into the game directory. If you already have a customised UE4SS install, back it up before using the action.
+- **Interpose** — a Nexus-hosted mod loader, installed and managed as a regular Vortex mod.
+
+Installing one no longer forces the other — pick whichever the mods you use require. The same dialog lets you uninstall either component later.
 
 ## Load Order
 
@@ -68,6 +73,7 @@ The load order section will also detect mods installed from the Steam Workshop a
 ## Development
 
 Build:
+
 ```
 npm install
 npm run build
@@ -75,7 +81,7 @@ npm run build
 
 Outputs go to `dist/` (webpack bundle + `info.json`).
 
-Contributions welcome – see `CONTRIBUTING.md` & `CODE_OF_CONDUCT.md`.
+Contributions welcome, see `CONTRIBUTING.md` & `CODE_OF_CONDUCT.md`.
 
 ## See also
 
@@ -87,4 +93,5 @@ Contributions welcome – see `CONTRIBUTING.md` & `CODE_OF_CONDUCT.md`.
 - [Vortex Knowledge Base (Nexus Mods)](https://wiki.nexusmods.com/index.php/Category:Vortex)
 
 ## Credits
-Based on the [extension](https://www.nexusmods.com/site/mods/520) for [Hogwarts Legacy](https://www.nexusmods.com/hogwartslegacy) by [lordvoldem0rt](https://next.nexusmods.com/profile/lordvoldem0rt) 
+
+Based on the [extension](https://www.nexusmods.com/site/mods/520) for [Hogwarts Legacy](https://www.nexusmods.com/hogwartslegacy) by [lordvoldem0rt](https://next.nexusmods.com/profile/lordvoldem0rt)

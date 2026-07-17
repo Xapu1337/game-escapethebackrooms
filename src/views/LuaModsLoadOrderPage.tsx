@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { useSelector } from 'react-redux';
 import { MainPage, IconBar, ToolbarIcon, FlexLayout, MainContext, types, selectors } from 'vortex-api';
-import { Panel } from 'react-bootstrap';
 import { refreshLuaMods, openLuaModsFolder } from '../util/luaModsUtil';
 import LuaModsLoadOrderInfo from './LuaModsLoadOrderInfo';
 import LuaModsLoadOrderPanel from './LuaModsLoadOrderPanel';
@@ -19,7 +18,7 @@ interface IStateWithLuaLoadOrder {
     }
 }
 
-function LuaModsLoadOrderPage(): JSX.Element {
+function LuaModsLoadOrderPage(): React.JSX.Element {
     const context: types.IExtensionContext = React.useContext(MainContext) as unknown as types.IExtensionContext;
     const profile = useSelector((state: types.IState) => selectors.activeProfile(state));
     const luaMods = useSelector((state: IStateWithLuaLoadOrder) => state.session.lualoadorder?.[profile.id] || {});
@@ -65,18 +64,14 @@ function LuaModsLoadOrderPage(): JSX.Element {
                 />
             </MainPage.Header>
             <MainPage.Body>
-                <Panel>
-                    <Panel.Body>
-                        <FlexLayout type='row'>
-                            <FlexLayout.Flex>
-                                <LuaModsLoadOrderPanel/>
-                            </FlexLayout.Flex>
-                            <FlexLayout.Flex>
-                                <LuaModsLoadOrderInfo/>
-                            </FlexLayout.Flex>
-                        </FlexLayout>
-                    </Panel.Body>
-                </Panel>
+                <FlexLayout type='row' className='etb-luamods-layout'>
+                    <FlexLayout.Flex className='etb-luamods-main'>
+                        <LuaModsLoadOrderPanel/>
+                    </FlexLayout.Flex>
+                    <FlexLayout.Fixed className='etb-luamods-side'>
+                        <LuaModsLoadOrderInfo/>
+                    </FlexLayout.Fixed>
+                </FlexLayout>
             </MainPage.Body>
         </MainPage>
     );

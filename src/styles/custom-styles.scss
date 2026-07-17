@@ -1,8 +1,118 @@
-.luamod-entry {
-    & .toggle-container {
-        & .toggle-children {
-            text-overflow: ellipsis;
-            overflow: hidden;
-        }
+.etb-luamods-layout {
+  height: 100%;
+  gap: 12px;
+}
+
+.etb-luamods-main {
+  min-width: 0; // let long mod names ellipsize instead of stretching the layout
+  display: flex;
+}
+
+.etb-luamods-side {
+  width: 320px;
+  max-width: 40%;
+  overflow: auto;
+  display: flex;
+}
+
+// Shared panel: fill the available height and manage its own scrolling.
+.etb-luamods-panel,
+.etb-luamods-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.etb-luamods-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.etb-luamods-title {
+  font-weight: 600;
+  font-size: 1.1em;
+}
+
+.etb-luamods-count {
+  flex: 0 0 auto;
+}
+
+.etb-luamods-list {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-bottom: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.etb-luamod-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  transition: background-color 0.12s ease-in-out;
+
+  // vortex-api Toggle: keep the label on one line and ellipsize overflow.
+  & .toggle-container {
+    min-width: 0;
+    flex: 1 1 auto;
+
+    & .toggle-children {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
+  }
+
+  &:hover {
+    background-color: rgba(127, 127, 127, 0.12);
+  }
+
+  &.is-disabled .etb-luamod-name {
+    opacity: 0.5;
+  }
+}
+
+.etb-luamod-name {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.etb-luamod-status {
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.etb-luamods-info-header {
+  font-weight: 600;
+}
+
+.etb-luamods-info .panel-body {
+  overflow-y: auto;
+
+  p {
+    margin-bottom: 10px;
+  }
+
+  code {
+    word-break: break-all;
+  }
+}
+
+.etb-luamods-info-note {
+  opacity: 0.7;
+  font-size: 0.9em;
 }

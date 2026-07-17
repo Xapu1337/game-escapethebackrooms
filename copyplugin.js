@@ -1,53 +1,38 @@
-import { promises as fs } from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+const fs = require('fs').promises;
+const path = require('path');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const VORTEX_PLUGINS = path.join(process.env.APPDATA, "Vortex", "Plugins");
-
-//console.log("__dirname=" + __dirname);
-//console.log("__filename=" + __filename);
+const VORTEX_PLUGINS = path.join(process.env.APPDATA, 'Vortex', 'Plugins');
 
 async function removeOldPlugins(name) {
-  const entries = await (
-    await fs.readdir(VORTEX_PLUGINS)
-  ).filter((entry) => entry.startsWith(name));
-  for (const entry of entries) {
-    const contents = await fs.readdir(path.join(VORTEX_PLUGINS, entry));
-    for (const content of contents) {
-      await fs.unlink(path.join(VORTEX_PLUGINS, entry, content));
+  const entries = await fs.readdir(VORTEX_PLUGINS);
+  for (const entry of entries.filter(e => e.startsWith(name))) {
+    await fs.rm(path.join(VORTEX_PLUGINS, entry), { recursive: true, force: true });
+  }
+}
+
+async function copyDir(src, dest) {
+  await fs.mkdir(dest, { recursive: true });
+  for (const entry of await fs.readdir(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyDir(s, d);
+    } else {
+      await fs.copyFile(s, d);
     }
-    await fs.rmdir(path.join(VORTEX_PLUGINS, entry));
   }
 }
 
 async function start() {
-  const packageData = await fs.readFile(path.join(__dirname, "package.json"), {
-    encoding: "utf8"
-  });
+  const data = JSON.parse(await fs.readFile(path.join(__dirname, 'package.json'), 'utf8'));
+  const destination = path.join(VORTEX_PLUGINS, `${data.name}-${data.version}`);
   try {
-    const data = JSON.parse(packageData);
-    const destination = path.join(
-      VORTEX_PLUGINS,
-      `${data.name}-${data.version}`
-    );
-    try {
-      await removeOldPlugins(data.name);
-    } catch (err) {
-      console.error(err);
-    }
-    const fileEntries = await fs.readdir(path.join(__dirname, "dist"));
-    await fs.mkdir(destination, { recursive: true });
-    for (const file of fileEntries) {
-      await fs.copyFile(
-        path.join(__dirname, "dist", file),
-        path.join(destination, file)
-      );
-    }
+    await removeOldPlugins(data.name);
   } catch (err) {
-    console.error(err);
+    console.error('Failed to remove old plugins:', err);
   }
+  await copyDir(path.join(__dirname, 'dist'), destination);
+  console.log(`Copied to ${destination}`);
 }
 
-start();
+start().catch(console.error);

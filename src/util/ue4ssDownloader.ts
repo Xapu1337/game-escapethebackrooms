@@ -1,10 +1,9 @@
-import { fs, log, types, util } from 'vortex-api';
+import { actions, fs, log, selectors, types, util } from 'vortex-api';
 import * as path from 'path';
 import * as https from 'https';
 import {
-    GAME_ID, UE4SS_GITHUB_API, UE4SS_CORE_DLL, UE4SS_FOLDER,
-    UE4SS_GITHUB_RELEASES_API, ETB_UE4SS_GITHUB_API,
-    ETB_UE4SS_NEXUS_MOD_ID, INTERPOSE_NEXUS_MOD_ID,
+    GAME_ID, UE4SS_CORE_DLL, UE4SS_FOLDER, UE4SS_MODS_SUBPATH,
+    ETB_UE4SS_GITHUB_API, INTERPOSE_NEXUS_MOD_ID,
 } from '../common';
 
 export interface IUE4SSReleaseAsset {
@@ -17,136 +16,6 @@ export interface IUE4SSGitHubRelease {
     assets: IUE4SSReleaseAsset[];
 }
 
-// ── Release cache (5-min TTL to avoid GitHub rate limiting) ──
-
-let _releaseCache: { releases: IUE4SSGitHubRelease[]; timestamp: number } | undefined;
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-// ── Standard UE4SS install (latest) ──
-
-export async function installOrUpdateUE4SS(context: types.IExtensionContext, force: boolean = false, overrideVersion?: string): Promise<void> {
-    let release: IUE4SSGitHubRelease;
-    try { release = await httpGetJSON(UE4SS_GITHUB_API); } catch (e) { return Promise.reject('Failed fetching UE4SS release metadata: ' + (e as Error).message); }
-    return _doInstallUE4SS(context, release, force, overrideVersion);
-}
-
-// ── Install a specific release (picked from version list) ──
-
-export async function installSpecificUE4SSRelease(context: types.IExtensionContext, release: IUE4SSGitHubRelease): Promise<void> {
-    return _doInstallUE4SS(context, release, true);
-}
-
-// ── Shared install logic ──
-
-async function _doInstallUE4SS(context: types.IExtensionContext, release: IUE4SSGitHubRelease, force: boolean = false, overrideVersion?: string): Promise<void> {
-    const state = context.api.getState();
-    const gamePath: string | undefined = state.settings.gameMode.discovered?.[GAME_ID]?.path;
-    if (!gamePath) return Promise.reject('Game path not discovered');
-
-    const binPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64');
-    const targetDLL = path.join(binPath, UE4SS_CORE_DLL);
-    const dwmapiDLL = path.join(binPath, 'dwmapi.dll');
-    const ue4ssFolder = path.join(binPath, UE4SS_FOLDER);
-    const versionFile = path.join(binPath, 'UE4SS.version');
-
-    const exists = await anyExists([targetDLL, dwmapiDLL, ue4ssFolder]);
-    if (exists) log('info', 'UE4SS already present – proceeding with update/repair');
-
-    const asset = release.assets.find(a => a.name.toLowerCase().endsWith('.zip'));
-    if (!asset) return Promise.reject('No UE4SS zip asset found in release ' + release.tag_name);
-
-    // Skip download if version file already matches tag and core dll exists, unless forced
-    if (!force) {
-        try {
-            if (exists) {
-                const vContent = await fs.readFileAsync(versionFile, 'utf8').catch(() => undefined);
-                if (vContent && vContent.trim() === release.tag_name) {
-                    context.api?.sendNotification?.({ type: 'success', message: `UE4SS already up to date (${release.tag_name})` });
-                    return Promise.resolve();
-                }
-            }
-        } catch { /* ignore */ }
-    }
-
-    await fs.ensureDirWritableAsync(binPath).catch(() => undefined);
-
-    const tmpBase = util.getVortexPath('temp');
-    const zipPath = path.join(tmpBase, `ue4ss_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
-    context.api?.sendNotification?.({ type: 'info', message: `${exists ? 'Updating' : 'Installing'} UE4SS ${release.tag_name}` });
-    try { await downloadWithRetry(asset.browser_download_url, zipPath, 3); } catch (e) { return Promise.reject('Failed downloading UE4SS: ' + (e as Error).message); }
-
-    try {
-        const stat = await fs.statAsync(zipPath);
-        if (stat.size < 50 * 1024) { await safeUnlink(zipPath); return Promise.reject('Downloaded UE4SS archive too small – aborting'); }
-    } catch (e) { return Promise.reject('Unable to validate UE4SS archive: ' + (e as Error).message); }
-
-    try {
-        const AdmZip = require('adm-zip');
-        const zip = new AdmZip(zipPath);
-        zip.extractAllTo(binPath, true);
-        try {
-            const entries: string[] = await fs.readdirAsync(binPath).catch(() => [] as string[]);
-            for (const e of entries) {
-                if (e.toLowerCase().endsWith('.md')) {
-                    try { await fs.unlinkAsync(path.join(binPath, e)); } catch { /* ignore */ }
-                }
-            }
-        } catch { /* ignore listing errors */ }
-    } catch (err) {
-        await safeUnlink(zipPath).catch(() => undefined);
-        log('error', 'Failed extracting UE4SS', err);
-        return Promise.reject(err);
-    }
-
-    await safeUnlink(zipPath).catch(() => undefined);
-    const storedVersion = overrideVersion ? overrideVersion : release.tag_name;
-    try { await fs.writeFileAsync(versionFile, storedVersion, 'utf8').catch(() => undefined); } catch { /* ignore */ }
-    context.api?.sendNotification?.({ type: 'success', message: `UE4SS ${exists ? 'updated' : 'installed'} to Binaries/Win64` });
-}
-
-// ── Fetch multiple releases for version picker ──
-
-export async function fetchUE4SSReleases(maxCount: number = 10): Promise<IUE4SSGitHubRelease[]> {
-    if (_releaseCache && (Date.now() - _releaseCache.timestamp) < CACHE_TTL_MS) {
-        return _releaseCache.releases;
-    }
-    const releases: IUE4SSGitHubRelease[] = await httpGetJSON(
-        UE4SS_GITHUB_RELEASES_API + '?per_page=' + maxCount
-    );
-    const filtered = releases.filter(r => r.assets.some(a => a.name.toLowerCase().endsWith('.zip')));
-    _releaseCache = { releases: filtered, timestamp: Date.now() };
-    return filtered;
-}
-
-// ── Uninstall standard UE4SS ──
-
-export async function uninstallUE4SS(context: types.IExtensionContext): Promise<void> {
-    const state = context.api.getState();
-    const gamePath: string | undefined = state.settings.gameMode.discovered?.[GAME_ID]?.path;
-    if (!gamePath) return Promise.reject('Game path not discovered');
-    const binPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64');
-    const targets = [
-        path.join(binPath, UE4SS_CORE_DLL),
-        path.join(binPath, 'dwmapi.dll'),
-        path.join(binPath, 'README.md'),
-        path.join(binPath, 'Changelog.md'),
-        path.join(binPath, 'UE4SS-settings.ini'),
-        path.join(binPath, 'UE4SS.version'),
-        path.join(binPath, 'Mods'),
-        path.join(binPath, UE4SS_FOLDER),
-    ];
-    for (const t of targets) {
-        try {
-            const stats = await fs.statAsync(t).catch(() => undefined);
-            if (!stats) continue;
-            if ((stats as any).isDirectory?.()) await fs.removeAsync?.(t).catch(async () => { /* fallback */ });
-            else await fs.unlinkAsync(t).catch(() => undefined);
-        } catch { /* ignore individual */ }
-    }
-    context.api?.sendNotification?.({ type: 'success', message: 'Standard UE4SS uninstalled' });
-}
-
-// ── Detection helpers ──
 
 export function isUE4SSInstalledSync(context: types.IExtensionContext): boolean {
     try {
@@ -156,7 +25,10 @@ export function isUE4SSInstalledSync(context: types.IExtensionContext): boolean 
         const fsNative = require('fs');
         const binPath = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64');
         return [UE4SS_CORE_DLL, 'dwmapi.dll', UE4SS_FOLDER].some(f => fsNative.existsSync(path.join(binPath, f)));
-    } catch { return false; }
+    } catch (e) {
+        log('error', 'isUE4SSInstalledSync failed', e);
+        return false;
+    }
 }
 
 export function getUE4SSVersionSync(context: types.IExtensionContext): string | undefined {
@@ -169,7 +41,10 @@ export function getUE4SSVersionSync(context: types.IExtensionContext): string | 
         const vf = path.join(binPath, 'UE4SS.version');
         if (!fsNative.existsSync(vf)) return undefined;
         return fsNative.readFileSync(vf, 'utf8').trim();
-    } catch { return undefined; }
+    } catch (e) {
+        log('error', 'getUE4SSVersionSync failed', e);
+        return undefined;
+    }
 }
 
 // ── Vortex mod detection by Nexus mod ID ──
@@ -183,15 +58,10 @@ export function findModByNexusId(context: types.IExtensionContext, nexusModId: n
     );
 }
 
-export function isETBUE4SSInstalled(context: types.IExtensionContext): boolean {
-    return findModByNexusId(context, ETB_UE4SS_NEXUS_MOD_ID) !== undefined;
-}
-
 export function isInterposeInstalled(context: types.IExtensionContext): boolean {
     return findModByNexusId(context, INTERPOSE_NEXUS_MOD_ID) !== undefined;
 }
 
-// ── Install ETB UE4SS (auto-download from GitHub, install as Vortex mod) ──
 
 export async function installETBUE4SS(context: types.IExtensionContext): Promise<void> {
     let release: IUE4SSGitHubRelease;
@@ -200,48 +70,297 @@ export async function installETBUE4SS(context: types.IExtensionContext): Promise
     } catch (e) {
         return Promise.reject('Failed fetching ETB UE4SS release: ' + (e as Error).message);
     }
-    const asset = release.assets.find(a => a.name.toLowerCase().endsWith('.zip'));
+    // Prefer the non-dev zip (skip zDev-* assets)
+    const asset =
+        release.assets.find(a => {
+            const n = a.name.toLowerCase();
+            return n.endsWith('.zip') && !n.startsWith('zdev');
+        }) ?? release.assets.find(a => a.name.toLowerCase().endsWith('.zip'));
     if (!asset) return Promise.reject('No zip asset found in ETB UE4SS release');
 
-    context.api?.sendNotification?.({ type: 'info', message: `Downloading ETB UE4SS ${release.tag_name}...` });
+    const state = context.api.getState();
+    const gamePath: string | undefined = state.settings.gameMode.discovered?.[GAME_ID]?.path;
+    if (!gamePath) return Promise.reject('Game path not discovered');
 
-    return new Promise<void>((resolve, reject) => {
-        context.api.events.emit(
-            'start-download',
-            [asset.browser_download_url],
-            {
-                game: GAME_ID,
-                name: 'ETB UE4SS',
-                source: 'github',
-            },
-            `ETB_UE4SS_${release.tag_name}.zip`,
-            (error: Error, id: string) => {
-                if (error) {
-                    log('error', 'ETB UE4SS download failed', error);
-                    reject(error);
-                    return;
+    const binPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64');
+    const versionFile = path.join(binPath, 'UE4SS.version');
+
+    const alreadyInstalled = isUE4SSInstalledSync(context);
+    if (alreadyInstalled) {
+        try {
+            const vContent = await fs.readFileAsync(versionFile, 'utf8').catch((e: unknown) => {
+                log('warn', 'Could not read UE4SS.version', e);
+                return undefined;
+            });
+            if (vContent && vContent.trim() === release.tag_name) {
+                context.api?.sendNotification?.({ type: 'success', message: `ETB UE4SS already up to date (${release.tag_name})` });
+                return;
+            }
+        } catch (e) {
+            log('warn', 'Version check failed, proceeding with install', e);
+        }
+    }
+
+    try {
+        await fs.ensureDirWritableAsync(binPath);
+    } catch (e) {
+        log('warn', 'ensureDirWritable failed for binPath', { binPath, e });
+    }
+
+    const tmpBase = util.getVortexPath('temp');
+    const zipPath = path.join(tmpBase, `etb_ue4ss_${Date.now()}.zip`);
+    context.api?.sendNotification?.({ type: 'info', message: `${alreadyInstalled ? 'Updating' : 'Installing'} ETB UE4SS ${release.tag_name}...` });
+
+    try { await downloadWithRetry(asset.browser_download_url, zipPath, 3); }
+    catch (e) { return Promise.reject('Failed downloading ETB UE4SS: ' + (e as Error).message); }
+
+    try {
+        const stat = await fs.statAsync(zipPath);
+        if (stat.size < 50 * 1024) {
+            await safeUnlink(zipPath);
+            return Promise.reject('Downloaded archive too small, aborting');
+        }
+    } catch (e) { return Promise.reject('Unable to validate archive: ' + (e as Error).message); }
+
+    try {
+        const AdmZip = require('adm-zip');
+        const zip = new AdmZip(zipPath);
+        zip.extractAllTo(binPath, true);
+
+        // Remove stray .md files from Win64 root
+        let entries: string[] = [];
+        try {
+            entries = await fs.readdirAsync(binPath);
+        } catch (e) {
+            log('warn', 'Could not list binPath after extraction', { binPath, e });
+        }
+        for (const e of entries) {
+            if (e.toLowerCase().endsWith('.md')) {
+                try {
+                    await fs.unlinkAsync(path.join(binPath, e));
+                } catch (err) {
+                    log('warn', 'Could not remove stray .md file', { file: e, err });
                 }
-                log('info', 'ETB UE4SS download started', { id });
-                context.api?.sendNotification?.({ type: 'success', message: 'ETB UE4SS download started. Install it from your Downloads tab.' });
-                resolve();
-            },
-            'replace',
-        );
+            }
+        }
+    } catch (err) {
+        await safeUnlink(zipPath);
+        log('error', 'Failed extracting ETB UE4SS', err);
+        return Promise.reject('Failed extracting ETB UE4SS: ' + err);
+    }
+
+    await safeUnlink(zipPath);
+
+    // Ensure UE4SS/Mods folder exists after extraction
+    const modsPath = path.join(binPath, UE4SS_MODS_SUBPATH);
+    try {
+        await fs.ensureDirWritableAsync(modsPath);
+    } catch (e) {
+        log('warn', 'ensureDirWritable failed for modsPath', { modsPath, e });
+    }
+
+    const modsTxt = path.join(modsPath, 'Mods.txt');
+    const txtExists = await fs.statAsync(modsTxt).then(() => true).catch((e: unknown) => {
+        log('debug', 'Mods.txt not found, will create', e);
+        return false;
     });
+    if (!txtExists) {
+        try {
+            await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' });
+        } catch (e) {
+            log('warn', 'Could not create Mods.txt', { modsTxt, e });
+        }
+    }
+
+    try {
+        await fs.writeFileAsync(versionFile, release.tag_name, 'utf8');
+    } catch (e) {
+        log('warn', 'Could not write UE4SS.version', { versionFile, e });
+    }
+
+    context.api?.sendNotification?.({ type: 'success', message: `ETB UE4SS ${alreadyInstalled ? 'updated' : 'installed'} to Binaries/Win64 (${release.tag_name})` });
 }
 
-// ── Install Interpose (open Nexus page) ──
 
-export function installInterpose(context: types.IExtensionContext): void {
-    const url = `https://www.nexusmods.com/escapethebackrooms/mods/${INTERPOSE_NEXUS_MOD_ID}?tab=files`;
-    util.opn(url);
+export async function uninstallETBUE4SS(context: types.IExtensionContext): Promise<void> {
+    const state = context.api.getState();
+    const gamePath: string | undefined = state.settings.gameMode.discovered?.[GAME_ID]?.path;
+    if (!gamePath) return Promise.reject('Game path not discovered');
+    const binPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64');
+    const targets = [
+        path.join(binPath, UE4SS_CORE_DLL),
+        path.join(binPath, 'dwmapi.dll'),
+        path.join(binPath, 'UE4SS-settings.ini'),
+        path.join(binPath, 'UE4SS.version'),
+        path.join(binPath, UE4SS_FOLDER),
+    ];
+    for (const t of targets) {
+        try {
+            const stats = await fs.statAsync(t).catch(() => {
+                log('debug', 'uninstall target not present, skipping', t);
+                return undefined;
+            });
+            if (!stats) continue;
+            if ((stats as any).isDirectory?.()) {
+                try {
+                    await (fs as any).removeAsync?.(t);
+                } catch (e) {
+                    log('error', 'Failed to remove UE4SS directory', { t, e });
+                }
+            } else {
+                try {
+                    await fs.unlinkAsync(t);
+                } catch (e) {
+                    log('error', 'Failed to unlink UE4SS file', { t, e });
+                }
+            }
+        } catch (e) {
+            log('error', 'Unexpected error uninstalling UE4SS target', { t, e });
+        }
+    }
+    context.api?.sendNotification?.({ type: 'success', message: 'ETB UE4SS uninstalled from Binaries/Win64' });
+}
+
+// ── Install / update Interpose via Vortex Nexus API (context.api.ext) ──
+
+async function getLatestInterposeFile(context: types.IExtensionContext): Promise<{ fileId: number; version: string } | undefined> {
+    const ext = (context.api as any).ext;
+    if (!ext?.nexusGetModFiles) return undefined;
+    try {
+        const files = await ext.nexusGetModFiles(GAME_ID, INTERPOSE_NEXUS_MOD_ID);
+        if (!files?.length) return undefined;
+        const picked = files.find((f: any) => f.category_name === 'MAIN') ?? files[0];
+        return { fileId: Number(picked.file_id), version: String(picked.version || picked.mod_version || '?') };
+    } catch (e) {
+        log('warn', '[interpose] could not fetch file list from Nexus', e);
+        return undefined;
+    }
+}
+
+export async function installInterpose(context: types.IExtensionContext, options?: { silent?: boolean }): Promise<void> {
+    const existing = findModByNexusId(context, INTERPOSE_NEXUS_MOD_ID);
+    const latest = await getLatestInterposeFile(context);
+
+    if (existing && latest) {
+        const installedFileId = Number(existing.attributes?.fileId);
+        if (installedFileId === latest.fileId) {
+            if (!options?.silent) {
+                context.api?.sendNotification?.({ type: 'success', message: `Interpose ${latest.version} — newest version already installed` });
+            }
+            return;
+        }
+        context.api?.sendNotification?.({ type: 'info', message: `Updating Interpose to ${latest.version}...` });
+    }
+
+    const ext = (context.api as any).ext;
+    if (!ext?.nexusDownload) {
+        return Promise.reject('Nexus API not available, make sure you are logged in to Nexus Mods in Vortex.');
+    }
+
+    // Subscribe BEFORE triggering install so we don't miss the event
+    const installDone = new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timed out')), 120_000);
+        context.api.events.once('did-install-mod', (_gId: string, _archiveId: string, modId: string) => {
+            clearTimeout(timer);
+            resolve(modId);
+        });
+    });
+
+    // Find a finished download for the specific latest version; fall back to any finished download.
+    // Passing fileId avoids re-installing an outdated archive when we need to update.
+    const existingDlId = findFinishedDownload(context, INTERPOSE_NEXUS_MOD_ID, latest?.fileId);
+    if (existingDlId) {
+        log('debug', '[interpose] installing from existing finished download', { existingDlId });
+        if (!existing) context.api?.sendNotification?.({ type: 'info', message: 'Installing Interpose...' });
+        context.api.events.emit('start-install-download', existingDlId, { allowAutoEnable: false }, (err: Error) => {
+            if (err) log('warn', '[interpose] start-install-download callback error', err);
+        });
+    } else {
+        if (!latest) {
+            return Promise.reject('Could not determine latest Interpose version — check Nexus login');
+        }
+        if (!existing) context.api?.sendNotification?.({ type: 'info', message: `Downloading Interpose ${latest.version}...` });
+        try {
+            await ext.nexusDownload(GAME_ID, INTERPOSE_NEXUS_MOD_ID, latest.fileId, undefined, true);
+        } catch (e) {
+            return Promise.reject('Interpose download failed: ' + (e as Error).message);
+        }
+    }
+
+    try {
+        const newModId = await installDone;
+        // Remove the previous version now that the new one is staged
+        if (existing && existing.id !== newModId) {
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    context.api.events.emit('remove-mod', GAME_ID, existing.id, (err: Error) => {
+                        if (err) reject(err); else resolve();
+                    });
+                });
+                log('debug', '[interpose] removed old version', { oldModId: existing.id });
+            } catch (e) {
+                log('warn', '[interpose] could not remove old version', e);
+            }
+        }
+        await enableAndDeployMod(context, newModId);
+        const vStr = latest?.version ? ` ${latest.version}` : '';
+        context.api?.sendNotification?.({ type: 'success', message: `Interpose${vStr} installed and enabled` });
+    } catch (e) {
+        log('warn', '[interpose] could not auto-enable after install', e);
+        context.api?.sendNotification?.({ type: 'info', message: 'Interpose installed — enable it in the Mods list once it finishes' });
+    }
+}
+
+// Background version check called on gamemode activation. Shows a warning notification
+// with an "Update Now" button if the installed version is behind Nexus.
+export async function checkInterposeOutdated(context: types.IExtensionContext): Promise<void> {
+    const existing = findModByNexusId(context, INTERPOSE_NEXUS_MOD_ID);
+    if (!existing) return;
+    const latest = await getLatestInterposeFile(context);
+    if (!latest) return;
+    const installedFileId = Number(existing.attributes?.fileId);
+    if (installedFileId === latest.fileId) return;
+    const installedVersion = String(existing.attributes?.version || existing.attributes?.fileVersion || 'unknown');
+    log('info', '[interpose] update available', { installedFileId, latestFileId: latest.fileId, latestVersion: latest.version });
     context.api?.sendNotification?.({
-        type: 'info',
-        message: 'Opening Nexus page for Interpose. Click "Mod Manager Download" to install via Vortex.',
+        type: 'warning',
+        message: `Interpose update available: ${installedVersion} → ${latest.version}`,
+        actions: [
+            {
+                title: 'Update Now',
+                action: (dismiss: () => void) => {
+                    dismiss();
+                    installInterpose(context).catch(e => log('error', '[interpose] update failed', e));
+                },
+            },
+        ],
+    } as any);
+}
+
+function findFinishedDownload(context: types.IExtensionContext, nexusModId: number, fileId?: number): string | undefined {
+    const state = context.api.getState();
+    const downloads: Record<string, any> = util.getSafe(state, ['persistent', 'downloads', 'files'], {});
+    const entry = Object.entries(downloads).find(([, dl]) => {
+        if (Number(dl.modInfo?.nexus?.ids?.modId) !== nexusModId) return false;
+        if (dl.state !== 'finished') return false;
+        if (fileId !== undefined && Number(dl.modInfo?.nexus?.ids?.fileId) !== fileId) return false;
+        return true;
+    });
+    return entry?.[0];
+}
+
+async function enableAndDeployMod(context: types.IExtensionContext, modId: string): Promise<void> {
+    const state = context.api.getState();
+    const profileId = selectors.activeProfile(state)?.id;
+    if (!profileId) return;
+    context.api.store?.dispatch(actions.setModEnabled(profileId, modId, true));
+    await new Promise<void>((resolve, reject) => {
+        context.api.events.emit('deploy-mods', (err: Error) => {
+            if (err) reject(err); else resolve();
+        });
     });
 }
 
-// ── Remove a Vortex mod by Nexus ID ──
 
 export async function removeVortexMod(context: types.IExtensionContext, nexusModId: number, label: string): Promise<void> {
     const mod = findModByNexusId(context, nexusModId);
@@ -259,7 +378,6 @@ export async function removeVortexMod(context: types.IExtensionContext, nexusMod
     }
 }
 
-// ── Network helpers ──
 
 function httpGetJSON<T>(url: string): Promise<T> {
     return new Promise((resolve, reject) => {
@@ -288,7 +406,12 @@ function httpGetJSON<T>(url: string): Promise<T> {
 async function downloadWithRetry(url: string, dest: string, attempts: number): Promise<void> {
     let lastErr: unknown;
     for (let i = 1; i <= attempts; i++) {
-        try { await downloadFile(url, dest); return; } catch (e) { lastErr = e; await safeUnlink(dest).catch(() => undefined); if (i < attempts) await delay(750 * i); }
+        try { await downloadFile(url, dest); return; } catch (e) {
+            lastErr = e;
+            log('warn', `Download attempt ${i}/${attempts} failed`, { url, e });
+            await safeUnlink(dest);
+            if (i < attempts) await delay(750 * i);
+        }
     }
     throw lastErr instanceof Error ? lastErr : new Error('Unknown download error');
 }
@@ -297,27 +420,11 @@ function downloadFile(url: string, dest: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const fsNative = require('fs');
         let out: any;
-        try {
-            out = fsNative.createWriteStream(dest);
-        } catch (e: any) {
-            if (e?.code === 'EPERM' || e?.code === 'EACCES') {
-                try {
-                    const os = require('os');
-                    const alt = require('path').join(os.tmpdir(), require('path').basename(dest));
-                    out = fsNative.createWriteStream(alt);
-                    dest = alt;
-                } catch (inner) {
-                    return reject(e);
-                }
-            } else {
-                return reject(e);
-            }
-        }
+        try { out = fsNative.createWriteStream(dest); } catch (e: any) { return reject(e); }
         let finished = false;
         const req = https.get(url, { headers: { 'User-Agent': 'vortex-etb-extension' } }, (res) => {
             if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                res.destroy();
-                return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+                res.destroy(); return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
             }
             if (res.statusCode !== 200) { return reject(new Error('HTTP ' + res.statusCode)); }
             res.pipe(out);
@@ -325,15 +432,19 @@ function downloadFile(url: string, dest: string): Promise<void> {
         });
         req.on('error', (err) => {
             if (!finished) {
-                try { out.close(); } catch { /* ignore */ }
+                try { out.close(); } catch (closeErr) { log('warn', 'Could not close write stream on request error', closeErr); }
                 reject(err);
             }
         });
     });
 }
 
-async function anyExists(paths: string[]): Promise<boolean> { for (const p of paths) { try { await fs.statAsync(p); return true; } catch { /* ignore */ } } return false; }
-async function safeUnlink(p: string): Promise<void> { try { await fs.unlinkAsync(p); } catch { /* ignore */ } }
-const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+async function safeUnlink(p: string): Promise<void> {
+    try {
+        await fs.unlinkAsync(p);
+    } catch (e) {
+        log('debug', 'safeUnlink: could not delete file', { p, e });
+    }
+}
 
-export default installOrUpdateUE4SS;
+const delay = (ms: number) => new Promise(r => setTimeout(r, ms));

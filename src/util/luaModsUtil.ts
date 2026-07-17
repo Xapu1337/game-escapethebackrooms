@@ -36,7 +36,7 @@ export class LuaModsMonitor {
         const state = this.API.getState();
         const discoveryPath = state.settings.gameMode.discovered['escapethebackrooms']?.path ?? undefined;
         if (!discoveryPath) throw new Error('Escape The Backrooms is not discovered!');
-        const luaModsPath = path.join(discoveryPath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
+        const luaModsPath = path.join(discoveryPath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'UE4SS', 'Mods');
         // Ensure directory & seed Mods.txt so watcher always attaches
         try {
             await fs.ensureDirWritableAsync(luaModsPath).catch(() => undefined);
@@ -99,7 +99,7 @@ export async function openLuaModsFolder(api: types.IExtensionApi) {
     const state = api.getState();
     const gamePath: string | undefined = state.settings.gameMode.discovered['escapethebackrooms']?.path || undefined;
     if (!gamePath) return api.showErrorNotification('Could not open Lua Mods Folder', 'Escape The Backrooms is not properly installed');
-    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
+    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'UE4SS', 'Mods');
     try {
         util.opn(luaModsPath);
     }
@@ -120,7 +120,7 @@ export async function refreshLuaMods(api: types.IExtensionApi) {
         api.showErrorNotification('Could not refresh logic mods', 'Unable to locate Escape The Backrooms install folder.');
         return;
     }
-    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
+    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'UE4SS', 'Mods');
     // Ensure directory & Mods.txt exist
     try { await fs.ensureDirWritableAsync(luaModsPath).catch(() => undefined); } catch { /* ignore */ }
     const modsTxtPath = path.join(luaModsPath, 'Mods.txt');
@@ -205,7 +205,7 @@ async function parseManifest(filePath: string): Promise<ILuaMod[]> {
     // Split into an array by new line, remove comments and blank lines
     try {
         const data = await fs.readFileAsync(filePath, { encoding: 'utf8' });
-        const entries = data.split('\n').filter(l => l !== '' && !l.startsWith(';')).map(l => l.trim());
+        const entries = data.split('\n').map(l => l.trim()).filter(l => l !== '' && !l.startsWith(';'));
         const mods = entries.reduce((prev, e, index) => {
             const text = e.trim()
             const enabledNumber: number | typeof NaN = parseInt(text.slice(-1));

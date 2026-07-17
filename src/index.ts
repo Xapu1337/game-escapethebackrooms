@@ -4,6 +4,7 @@ import * as VortexUtils from './VortexUtils';
 import { ILoadOrderEntry, IProps } from './types';
 import Migrate from './migration';
 import { LuaModsMonitor, refreshLuaMods, writeManifest } from './util/luaModsUtil';
+import { writeBPModLoadOrder } from './util/bpModLoaderUtil';
 import LuaModsLoadOrderPage from './views/LuaModsLoadOrderPage';
 import { luaModReducer } from './reducers/luaReducer';
 
@@ -14,37 +15,39 @@ import {
   EXECUTABLE,
   MODSFOLDER_PATH,
   MOVIESMOD_PATH,
+  LOGICMODS_PATH,
+  UE4SS_MODS_SUBPATH,
   IGNORE_CONFLICTS,
   IGNORE_DEPLOY,
   STOP_PATTERNS,
   MODTYPE_MOVIES,
   MODTYPE_PAK,
+  MODTYPE_LOGICMODS,
   INSTALLER_MOVIES,
   INSTALLER_BP_LUA,
-  ETB_UE4SS_NEXUS_MOD_ID,
   INTERPOSE_NEXUS_MOD_ID,
 } from './common';
-import installOrUpdateUE4SS, {
-  uninstallUE4SS, isUE4SSInstalledSync, getUE4SSVersionSync,
-  fetchUE4SSReleases, installSpecificUE4SSRelease,
-  isETBUE4SSInstalled, isInterposeInstalled,
-  installETBUE4SS, installInterpose,
+import {
+  isUE4SSInstalledSync, getUE4SSVersionSync,
+  isInterposeInstalled,
+  installETBUE4SS, uninstallETBUE4SS, installInterpose,
+  checkInterposeOutdated,
   removeVortexMod,
-  IUE4SSGitHubRelease,
 } from './util/ue4ssDownloader';
 import ETBMovieInstaller from './installers/etb-installer-movies';
 import ETBBluePrintOrLuaInstaller from './installers/etb-installer-bp-lua';
 import ETBMoviesModType from './modtypes/etb-modtype-movies';
 import ETBPAKModType from './modtypes/etb-modtype-pak';
+import ETBLogicModsModType from './modtypes/etb-modtype-logicmods';
 import ETBMovieMerger from './merges/etb-movies-merge';
 
 let monitor: LuaModsMonitor;
 
 const LOADORDER_FILE = 'loadOrder.json';
 const VERSION_PATH = path.join('EscapeTheBackrooms', 'Content', 'Data', 'Version', 'DA_Version.txt');
-let sessionUE4SSNotified = false;
-let sessionUE4SSSuppressed = false;
-let ue4ssNotificationId: string | undefined;
+let sessionModLoaderNotified = false;
+let sessionModLoaderSuppressed = false;
+let modLoaderNotificationId: string | undefined;
 
 async function getGameVersion(discoveryPath: string) {
   // Try both with and without the extra game folder in case discovery already points at the project folder
@@ -92,35 +95,36 @@ function main(context: types.IExtensionContext) {
   return true;
 }
 
-function notifyIfUE4SSMissing(context: types.IExtensionContext, _source: 'activation' | 'deploy') {
+function notifyIfModLoaderMissing(context: types.IExtensionContext, _source: 'activation' | 'deploy') {
   try {
-    if (sessionUE4SSNotified || sessionUE4SSSuppressed) return;
+    if (sessionModLoaderNotified || sessionModLoaderSuppressed) return;
     const st = context.api.getState();
     const gameId = selectors.activeGameId(st);
     if (gameId !== GAME_ID) return;
     const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
     if (!gp) return;
-    if (isUE4SSInstalledSync(context)) return;
-    sessionUE4SSNotified = true; // ensure single notification this session unless user installs later
+    // A mod loader is present if either ETB UE4SS or Interpose is installed.
+    if (isUE4SSInstalledSync(context) || isInterposeInstalled(context)) return;
+    sessionModLoaderNotified = true; // ensure single notification this session unless user installs later
     const notif = {
       type: 'warning',
-      message: 'UE4SS is not installed – Lua/Blueprint mods will not function.',
+      message: 'No mod loader is installed, Lua/Blueprint mods will not function.',
       actions: [
         {
-          title: 'Install UE4SS',
-          action: () => installOrUpdateUE4SS(context).catch(e => log('error', 'UE4SS install via notification failed', e)),
+          title: 'Install Mod Loader',
+          action: () => showModLoaderHubDialog(context).catch(e => log('error', 'Mod Loader dialog via notification failed', e)),
         },
         {
           title: "Don't show again",
           action: () => {
-            sessionUE4SSSuppressed = true;
-            if (ue4ssNotificationId) { (context.api as any).dismissNotification?.(ue4ssNotificationId); }
+            sessionModLoaderSuppressed = true;
+            if (modLoaderNotificationId) { (context.api as any).dismissNotification?.(modLoaderNotificationId); }
           },
         },
       ],
     } as any;
     const ret = context.api.sendNotification?.(notif) as any;
-    ue4ssNotificationId = ret?.id || ret;
+    modLoaderNotificationId = ret?.id || ret;
   } catch { /* ignore */ }
 }
 
@@ -136,7 +140,7 @@ function registerGame(context: types.IExtensionContext) {
     logo: 'gameart.jpg',
     executable: () => EXECUTABLE,
     requiredFiles: [EXECUTABLE],
-    setup,
+    setup: (discovery) => setup(context, discovery),
     requiresCleanup: true,
     compatible: { symlinks: false },
     environment: { SteamAppId: STEAM_ID },
@@ -158,7 +162,11 @@ function registerLoadOrderIntegration(context: types.IExtensionContext) {
     serializeLoadOrder: async (loadOrder) => SerializeLoadOrder(context, loadOrder),
     toggleableEntries: false,
     usageInstructions:
-      'Re-position entries by dragging and dropping them. Mods further down load last and win conflicts. Movie replacers (.bk2) are unaffected; only PAK style files are.',
+      'Re-position entries by dragging and dropping them. Mods further down load last and win conflicts.\n\n'
+      + 'PAK mods (~mods): ordered by this list\n\n'
+      + 'Blueprint mods (LogicMods): this list is written to UE4SS\'s BPModLoaderMod load_order.txt. '
+      + 'It only takes effect if ETB UE4SS is installed\n\n'
+      + 'Movie replacers (.bk2) are unaffected.',
   });
 }
 
@@ -200,6 +208,15 @@ function registerModTypes(context: types.IExtensionContext) {
     ETBPAKModType.test,
     { mergeMods: (mod) => ETBPAKModType.options.mergeMods(mod, context), name: 'PAK Mod' },
   );
+
+  context.registerModType(
+    MODTYPE_LOGICMODS,
+    30,
+    ETBLogicModsModType.isSupported,
+    (game) => ETBLogicModsModType.getPath(context, game),
+    ETBLogicModsModType.test,
+    { mergeMods: true, name: 'Blueprint Mod (LogicMods)' },
+  );
 }
 
 function registerInstallers(context: types.IExtensionContext) {
@@ -224,6 +241,12 @@ function registerMerges(context: types.IExtensionContext) {
     (filePath, mergePath) => ETBMovieMerger.merge(context, filePath, mergePath),
     ETBMovieMerger.modtype,
   );
+
+  // NOTE: LogicMods (blueprint) paks are deliberately NOT merged/renamed here.
+  // BPModLoaderMod derives each mod's asset path from the pak's file name
+  // (/Game/Mods/<pakName>/ModActor), so renaming a pak stops the mod loading.
+  // Their load order is written to BPModLoaderMod/load_order.txt instead —
+  // see util/bpModLoaderUtil.
 }
 
 function registerActions(context: types.IExtensionContext) {
@@ -249,154 +272,123 @@ function registerActions(context: types.IExtensionContext) {
     () => selectors.activeGameId(context.api.getState()) === GAME_ID,
   );
 
-  // Consolidated UE4SS submenu action
+  // Consolidated Mod Loader submenu action
   context.registerAction(
     'mod-icons',
     125,
     'download',
     {},
-    'UE4SS',
-    () => { showUE4SSHubDialog(context).catch(e => log('error', 'UE4SS dialog error', e)); },
+    'Mod Loader',
+    () => { showModLoaderHubDialog(context).catch(e => log('error', 'Mod Loader dialog error', e)); },
     () => selectors.activeGameId(context.api.getState()) === GAME_ID,
   );
 }
 
-// ── UE4SS Management Dialogs ──
 
-async function showUE4SSHubDialog(context: types.IExtensionContext): Promise<void> {
-  const stdInstalled = isUE4SSInstalledSync(context);
-  const stdVersion = stdInstalled ? (getUE4SSVersionSync(context) || 'unknown') : null;
-  const etbInstalled = isETBUE4SSInstalled(context);
+async function showModLoaderHubDialog(context: types.IExtensionContext): Promise<void> {
+  const ue4ssInstalled = isUE4SSInstalledSync(context);
+  const ue4ssVersion = ue4ssInstalled ? (getUE4SSVersionSync(context) || 'unknown') : null;
   const interposeInstalled = isInterposeInstalled(context);
 
   const statusParts: string[] = [];
-  if (stdInstalled) statusParts.push(`Standard UE4SS ${stdVersion}`);
-  if (etbInstalled) statusParts.push('ETB UE4SS');
+  if (ue4ssInstalled) statusParts.push(`ETB UE4SS ${ue4ssVersion}`);
   if (interposeInstalled) statusParts.push('Interpose');
   const statusLine = statusParts.length
     ? 'Installed: ' + statusParts.join(', ')
-    : 'No UE4SS variant is currently installed.';
+    : 'Nothing installed yet.';
 
-  const anyInstalled = stdInstalled || etbInstalled || interposeInstalled;
+  const anyInstalled = ue4ssInstalled || interposeInstalled;
 
-  const choices = [
-    { id: 'standard', text: 'Standard UE4SS (select version from GitHub)', value: false },
-    { id: 'etb', text: 'ETB UE4SS (Recommended) — optimized fork for ETB', value: true },
-    { id: 'interpose', text: 'Interpose — additional mod loader', value: false },
+  // Independent checkboxes so the user can install ETB UE4SS and/or Interpose.
+  // Pre-check ETB UE4SS when nothing is installed yet; never force Interpose.
+  const checkboxes = [
+    {
+      id: 'etb',
+      text: 'ETB UE4SS: ETB-specific fork (used for Lua or C++ mods)',
+      value: ue4ssInstalled ? false : !interposeInstalled,
+    },
+    {
+      id: 'interpose',
+      text: 'Interpose: Blueprint Mod Loader (used for LogicMods mods)',
+      value: false,
+    },
   ];
 
-  const btns: any[] = [{ label: 'Continue' }];
+  const btns: any[] = [{ label: 'Install Selected' }];
   if (anyInstalled) btns.push({ label: 'Uninstall...' });
   btns.push({ label: 'Close' });
 
   const result = await context.api.showDialog(
     'question',
-    'UE4SS Management',
-    { text: statusLine, choices },
+    'Mod Loader Management',
+    {
+      text: `${statusLine}\n\nSelect the mod loader(s) to install or update. You can pick either one or both (recommended).`,
+      checkboxes,
+    },
     btns,
   );
 
   if (result.action === 'Close') return;
 
   if (result.action === 'Uninstall...') {
-    return showUninstallDialog(context, stdInstalled, etbInstalled, interposeInstalled);
+    return showUninstallDialog(context, ue4ssInstalled, interposeInstalled);
   }
 
-  // Find which choice is selected
-  const selected = Object.entries(result.input || {}).find(([, v]) => v === true)?.[0];
+  const selected = result.input || {};
+  if (!selected['etb'] && !selected['interpose']) {
+    context.api.sendNotification?.({
+      type: 'info',
+      message: 'No mod loader selected — nothing to install.',
+      displayMS: 4000,
+    });
+    return;
+  }
 
-  if (selected === 'standard') {
-    return showVersionPickerDialog(context);
-  } else if (selected === 'etb') {
+  if (selected['etb']) {
     try {
       await installETBUE4SS(context);
     } catch (e) {
       context.api.showErrorNotification('Failed to download ETB UE4SS', e);
     }
-  } else if (selected === 'interpose') {
-    installInterpose(context);
   }
-}
-
-async function showVersionPickerDialog(context: types.IExtensionContext): Promise<void> {
-  let releases: IUE4SSGitHubRelease[];
-  try {
-    releases = await fetchUE4SSReleases(10);
-  } catch (e) {
-    context.api.showErrorNotification('Failed to fetch UE4SS releases', e);
-    return;
-  }
-  if (!releases.length) {
-    context.api.showErrorNotification('No UE4SS releases found', 'GitHub returned no releases with downloadable assets.');
-    return;
-  }
-
-  const currentVersion = getUE4SSVersionSync(context);
-  const choices = releases.map((r, i) => {
-    let label = r.tag_name;
-    if (currentVersion && r.tag_name === currentVersion) label += ' (installed)';
-    if (i === 0) label += ' [latest]';
-    return { id: r.tag_name, text: label, value: i === 0 };
-  });
-
-  const result = await context.api.showDialog(
-    'question',
-    'Select UE4SS Version',
-    { text: 'Pick a version to install. The latest release is pre-selected.', choices },
-    [{ label: 'Install' }, { label: 'Back' }, { label: 'Cancel' }],
-  );
-
-  if (result.action === 'Cancel') return;
-  if (result.action === 'Back') return showUE4SSHubDialog(context);
-
-  const selectedTag = Object.entries(result.input || {}).find(([, v]) => v === true)?.[0];
-  const selectedRelease = releases.find(r => r.tag_name === selectedTag);
-  if (!selectedRelease) {
-    context.api.showErrorNotification('No version selected', 'Please select a version before clicking Install.');
-    return;
-  }
-
-  try {
-    await installSpecificUE4SSRelease(context, selectedRelease);
-  } catch (e) {
-    context.api.showErrorNotification('Failed to install UE4SS ' + selectedRelease.tag_name, e);
+  if (selected['interpose']) {
+    try {
+      await installInterpose(context);
+    } catch (e) {
+      context.api.showErrorNotification('Failed to install Interpose', e);
+    }
   }
 }
 
 async function showUninstallDialog(
   context: types.IExtensionContext,
-  stdInstalled: boolean,
-  etbInstalled: boolean,
+  ue4ssInstalled: boolean,
   interposeInstalled: boolean,
 ): Promise<void> {
-  const choices: any[] = [];
-  if (stdInstalled) choices.push({ id: 'standard', text: 'Standard UE4SS (direct install)', value: true });
-  if (etbInstalled) choices.push({ id: 'etb', text: 'ETB UE4SS (Vortex mod)', value: false });
-  if (interposeInstalled) choices.push({ id: 'interpose', text: 'Interpose (Vortex mod)', value: false });
+  const checkboxes: any[] = [];
+  if (ue4ssInstalled) checkboxes.push({ id: 'etb', text: 'ETB UE4SS', value: false });
+  if (interposeInstalled) checkboxes.push({ id: 'interpose', text: 'Interpose', value: false });
 
-  if (!choices.length) {
-    await context.api.showDialog('info', 'Nothing to uninstall', { text: 'No UE4SS variants are currently installed.' }, [{ label: 'OK' }]);
+  if (!checkboxes.length) {
+    await context.api.showDialog('info', 'Nothing to uninstall', { text: 'No mod loaders are currently installed.' }, [{ label: 'OK' }]);
     return;
   }
 
   const result = await context.api.showDialog(
     'question',
-    'Uninstall UE4SS Components',
-    { text: 'Select which components to remove.', choices },
+    'Uninstall Mod Loader Components',
+    { text: 'Select which components to remove. You can pick either one or both.', checkboxes },
     [{ label: 'Uninstall Selected' }, { label: 'Back' }, { label: 'Cancel' }],
   );
 
   if (result.action === 'Cancel') return;
-  if (result.action === 'Back') return showUE4SSHubDialog(context);
+  if (result.action === 'Back') return showModLoaderHubDialog(context);
 
   const selected = result.input || {};
   const errors: string[] = [];
 
-  if (selected['standard']) {
-    try { await uninstallUE4SS(context); } catch (e) { errors.push('Standard UE4SS: ' + e); }
-  }
   if (selected['etb']) {
-    try { await removeVortexMod(context, ETB_UE4SS_NEXUS_MOD_ID, 'ETB UE4SS'); } catch (e) { errors.push('ETB UE4SS: ' + e); }
+    try { await uninstallETBUE4SS(context); } catch (e) { errors.push('ETB UE4SS: ' + e); }
   }
   if (selected['interpose']) {
     try { await removeVortexMod(context, INTERPOSE_NEXUS_MOD_ID, 'Interpose'); } catch (e) { errors.push('Interpose: ' + e); }
@@ -405,6 +397,78 @@ async function showUninstallDialog(
   if (errors.length) {
     context.api.showErrorNotification('Some components failed to uninstall', errors.join('\n'));
   }
+}
+
+
+async function ensureGameFolders(context: types.IExtensionContext, gamePath: string): Promise<void> {
+  const targets = [
+    { p: path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH), label: 'Win64/UE4SS/Mods' },
+    { p: path.join(gamePath, MODSFOLDER_PATH), label: '~mods' },
+    { p: path.join(gamePath, LOGICMODS_PATH), label: 'LogicMods' },
+  ];
+
+  const blocked: { p: string; label: string }[] = [];
+  for (const t of targets) {
+    try {
+      await fs.ensureDirWritableAsync(t.p);
+      // Seed Mods.txt for the UE4SS/Mods folder
+      if (t.label === 'Win64/UE4SS/Mods') {
+        const modsTxt = path.join(t.p, 'Mods.txt');
+        const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
+        if (!exists) await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
+      }
+    } catch (err: any) {
+      if (err?.code === 'EPERM' || err?.code === 'EACCES') {
+        blocked.push(t);
+      } else {
+        log('warn', `Could not ensure game folder ${t.label}`, err);
+      }
+    }
+  }
+
+  if (blocked.length === 0) return;
+
+  const labels = blocked.map(b => b.label).join(', ');
+  const blockedPaths = blocked.map(b => b.p);
+  context.api?.sendNotification?.({
+    type: 'warning',
+    title: 'Mod folders need admin access',
+    message: `Cannot create: ${labels}. Mods may not deploy correctly.\n\n${blockedPaths.join('\n')}`,
+    actions: [
+      {
+        title: 'Create (Elevated)',
+        action: (dismiss: () => void) => {
+          dismiss();
+          createDirsElevated(blockedPaths)
+            .then(() => context.api?.sendNotification?.({ type: 'success', message: 'Mod folders created. Re-deploy if needed.' }))
+            .catch(() => context.api?.sendNotification?.({ type: 'error', message: 'Elevated folder creation failed. Run Vortex as Administrator.' }));
+        },
+      },
+      {
+        title: 'Dismiss',
+        action: (dismiss: () => void) => dismiss(),
+      },
+    ],
+  } as any);
+}
+
+function createDirsElevated(dirs: string[]): Promise<void> {
+  const os = require('os');
+  const cp = require('child_process');
+  const fsNative = require('fs');
+  const scriptPath = path.join(os.tmpdir(), `vortex_etb_mkdir_${Date.now()}.ps1`);
+  const lines = dirs.map(d => `New-Item -ItemType Directory -Force -Path '${d.replace(/'/g, "''")}'`);
+  fsNative.writeFileSync(scriptPath, lines.join('\r\n'), 'utf8');
+  const escapedScript = scriptPath.replace(/\\/g, '\\\\').replace(/'/g, "''");
+  return new Promise<void>((resolve) => {
+    cp.execFile('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -NonInteractive -File ''${escapedScript}'''`,
+    ], () => {
+      try { fsNative.unlinkSync(scriptPath); } catch { /* ignore */ }
+      resolve();
+    });
+  });
 }
 
 function setupReactiveHooks(context: types.IExtensionContext) {
@@ -420,24 +484,20 @@ function setupReactiveHooks(context: types.IExtensionContext) {
       const st = context.api.getState();
       const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
       if (!gp) return;
-      const modsDir = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
-      try {
-        await fs.ensureDirWritableAsync(modsDir).catch(() => undefined);
-        const modsTxt = path.join(modsDir, 'Mods.txt');
-        const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
-        if (!exists) {
-          await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
-        }
-      } catch { /* ignore */ }
-      // First activation notification (async, non-blocking)
-      notifyIfUE4SSMissing(context, 'activation');
+      await ensureGameFolders(context, gp);
+      notifyIfModLoaderMissing(context, 'activation');
+      checkInterposeOutdated(context).catch(e => log('warn', 'Interpose version check failed', e));
     });
     context.api.events.on('will-deploy', () => monitor.pause());
     context.api.events.on('will-purge', () => monitor.pause());
     context.api.events.on('did-deploy', () => {
       monitor.resume();
       refreshLuaMods(context.api);
-      notifyIfUE4SSMissing(context, 'deploy');
+      notifyIfModLoaderMissing(context, 'deploy');
+      // Blueprint mod order lives in BPModLoaderMod/load_order.txt, not in the pak
+      // file names, so it has to be rewritten whenever deployment changes.
+      writeBPModLoadOrder(context.api)
+        .catch(err => log('error', 'Could not write BPModLoader load order', err));
     });
     context.api.events.on('did-purge', () => {
       monitor.resume();
@@ -465,7 +525,7 @@ function setupReactiveHooks(context: types.IExtensionContext) {
       const gp: string | undefined = st.settings.gameMode.discovered[GAME_ID]?.path;
       if (!gp) return;
 
-      const modsPath = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods', 'Mods.txt');
+      const modsPath = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH, 'Mods.txt');
       monitor.pause();
       writeManifest(currLO, modsPath)
         .catch((err) => log('error', 'Could not write LUA manifest', err))
@@ -512,7 +572,7 @@ async function DeserializeLoadOrder(context: types.IExtensionContext): Promise<t
   const filteredData = data.filter((e) => enabledModIds.includes(e.id));
   const newMods = enabledModIds.filter(
     (id) =>
-      [MODTYPE_PAK, MODTYPE_MOVIES].includes(mods[id]?.type) &&
+      [MODTYPE_PAK, MODTYPE_MOVIES, MODTYPE_LOGICMODS].includes(mods[id]?.type) &&
       filteredData.find((lo) => lo.id === id) === undefined,
   );
 
@@ -527,8 +587,6 @@ async function DeserializeLoadOrder(context: types.IExtensionContext): Promise<t
 
   return Promise.resolve(filteredData);
 }
-
-//#region SOMETHING
 
 async function SerializeLoadOrder(
   context: types.IExtensionContext,
@@ -551,22 +609,19 @@ async function SerializeLoadOrder(
   return Promise.resolve();
 }
 
-//#endregion
-
-async function setup(discovery: types.IDiscoveryResult) {
-  const p = path.join(discovery.path, MODSFOLDER_PATH);
-  try {
-    await fs.ensureDirWritableAsync(p);
-    // also ensure Mods folder structure for Lua (avoid ENOENT later)
-    const modsDir = path.join(discovery.path, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'Mods');
-    await fs.ensureDirWritableAsync(modsDir).catch(() => undefined);
-    const modsTxt = path.join(modsDir, 'Mods.txt');
-    const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
-    if (!exists) await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
-    return Promise.resolve;
-  } catch (e) {
-    return Promise.reject(e);
+async function setup(context: types.IExtensionContext, discovery: types.IDiscoveryResult): Promise<void> {
+  const foldersToCreate = [
+    path.join(discovery.path, MODSFOLDER_PATH),
+    path.join(discovery.path, LOGICMODS_PATH),
+    path.join(discovery.path, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH),
+  ];
+  for (const f of foldersToCreate) {
+    await fs.ensureDirWritableAsync(f).catch(() => undefined);
   }
+  // Seed Mods.txt so the Lua monitor always has a file to watch
+  const modsTxt = path.join(discovery.path, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH, 'Mods.txt');
+  const txtExists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
+  if (!txtExists) await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
 }
 
 async function requiresLauncher(gamePath: string, store?: string) {

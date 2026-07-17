@@ -2,10 +2,23 @@ import * as React from 'react';
 
 function LuaModsLoadOrderInfo() {
     return (
-        <div style={{paddingLeft: '8px'}}>
-            <h3>Lua Mods</h3>
-            <p>This page allows you to enabled and disable Lua script mods which have been installed to the EscapeTheBackrooms\Binaries\Win64\Mods folder.</p>
-            <p>Lua mods are used to inject changes into the game without requiring a PAK file. <a href='https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/v3.0.1'>UE4SS</a> must be installed for these mods to work correctly.</p>
+        <div className='panel panel-default etb-luamods-info'>
+            <div className='panel-heading etb-luamods-info-header'>Lua Mods</div>
+            <div className='panel-body'>
+                <p>
+                    Enable or disable the Lua script mods installed to
+                    {' '}<code>EscapeTheBackrooms\Binaries\Win64\ue4ss\Mods</code>.
+                </p>
+                <p>
+                    Lua mods inject changes into the game without a PAK file. A mod loader
+                    {' '}(<a href='https://github.com/ETBCommunity/UE4SS/releases/latest'>ETB UE4SS</a>)
+                    {' '}must be installed for these mods to load.
+                </p>
+                <p className='etb-luamods-info-note'>
+                    Changes here are written to the game's <code>mods.txt</code> and apply the next
+                    time the game launches.
+                </p>
+            </div>
         </div>
     );
 }

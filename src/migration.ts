@@ -1,7 +1,7 @@
 import path from "path";
 import * as VortexUtils from "./VortexUtils";
 import { types, log, actions, fs, selectors, util } from "vortex-api";
-import { GAME_ID, MODSFOLDER_PATH, MODTYPE_PAK } from './common';
+import { GAME_ID, MODSFOLDER_PATH, MODTYPE_PAK, MODTYPE_LOGICMODS, LOGICMODS_PATH } from './common';
 import semver from "semver";
 
 async function migrate0_2_11(context: types.IExtensionContext, oldversion: string) {
@@ -79,12 +79,85 @@ async function migrate0_2_11(context: types.IExtensionContext, oldversion: strin
   }
 }
 
+async function migrate0_1_3(context: types.IExtensionContext) {
+  const state = context.api.getState();
+  const mods = state.persistent.mods[GAME_ID] ?? {};
+  const dispatch = context.api.store?.dispatch;
+
+  const logicModsMods = Object.values(mods).filter((m) => m.type === MODTYPE_LOGICMODS);
+  if (!logicModsMods.length) return;
+
+  // Purge the old (broken) MODTYPE_LOGICMODS deployment before retyping
+  const gamePath = state.settings.gameMode.discovered?.[GAME_ID]?.path;
+  if (gamePath) {
+    const logicModsPath = path.join(gamePath, LOGICMODS_PATH);
+    try {
+      await context.api.emitAndAwait('purge-mods-in-path', GAME_ID, MODTYPE_LOGICMODS, logicModsPath);
+    } catch (err) {
+      log('warn', 'Could not purge LogicMods deployment during 0.1.3 migration', err);
+    }
+  }
+
+  // Reset all MODTYPE_LOGICMODS mods to "" so they redeploy via game root + full path (correct)
+  for (const mod of logicModsMods) {
+    log('info', `migrate0_1_3: resetting type for mod ${mod.id}`);
+    dispatch(actions.setModType(GAME_ID, mod.id, ''));
+  }
+
+  dispatch(actions.setDeploymentNecessary(GAME_ID, true));
+
+  context.api.sendNotification?.({
+    type: 'info',
+    message: 'Blueprint mods (LogicMods) have been reset and will redeploy correctly. Reinstall them to enable load order support.',
+  } as any);
+}
+
+async function migrate0_1_4(context: types.IExtensionContext) {
+  const state = context.api.getState();
+  const mods = state.persistent.mods[GAME_ID] ?? {};
+  const dispatch = context.api.store?.dispatch;
+  const stagingPath = selectors.installPathForGame(state, GAME_ID);
+
+  const defaultMods = Object.values(mods).filter((m) => m.type === '');
+  let anyRetyped = false;
+
+  for (const mod of defaultMods) {
+    if (!mod.installationPath) continue;
+    const logicSubPath = path.join(stagingPath, mod.installationPath, 'EscapeTheBackrooms', 'Content', 'Paks', 'LogicMods');
+    const hasLogicMods = await fs.statAsync(logicSubPath).then(() => true).catch(() => false);
+    if (!hasLogicMods) continue;
+    log('info', `migrate0_1_4: re-assigning MODTYPE_LOGICMODS to ${mod.id}`);
+    dispatch(actions.setModType(GAME_ID, mod.id, MODTYPE_LOGICMODS));
+    anyRetyped = true;
+  }
+
+  if (anyRetyped) {
+    dispatch(actions.setDeploymentNecessary(GAME_ID, true));
+  }
+}
+
 export default async function Migrate(context: types.IExtensionContext, oldVersion: string) {
   /*
    * Performed on main thread, and not render thread, so we can't use usual // console.log
    */
 
   log("info", `Migrate oldVersion=${oldVersion}`);
+
+  if (semver.lt(oldVersion, "0.1.3")) {
+    try {
+      await migrate0_1_3(context);
+    } catch (err) {
+      log("error", "Failed to run migrate0_1_3", err);
+    }
+  }
+
+  if (semver.lt(oldVersion, "0.1.4")) {
+    try {
+      await migrate0_1_4(context);
+    } catch (err) {
+      log("error", "Failed to run migrate0_1_4", err);
+    }
+  }
 
   if (semver.lt(oldVersion, "0.2.11")) {
     try {

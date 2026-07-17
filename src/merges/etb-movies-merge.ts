@@ -1,6 +1,7 @@
-import { fs, types, selectors, util } from 'vortex-api';
+import { fs, types, selectors } from 'vortex-api';
 import * as path from 'path';
 import { GAME_ID, PAK_EXTENSIONS, MOVIES_EXTENSION, MODTYPE_MOVIES } from '../common';
+import { getLoadOrder, prefixForMod } from '../util/loadOrderPrefix';
 
 const ETBMovieMerger = { test: qualify, merge: doMerge, modtype: MODTYPE_MOVIES };
 
@@ -11,15 +12,12 @@ function qualify(context: types.IExtensionContext, game: types.IGame): types.IMe
 
 async function doMerge(context: types.IExtensionContext, filePath: string, mergePath: string): Promise<void> {
   const state = context.api.getState();
-  const profile: types.IProfile = selectors.activeProfile(state);
   const installRoot: string = selectors.installPathForGame(state, GAME_ID);
   const relativeStaging = path.relative(installRoot, filePath);
   const modId = relativeStaging.split(path.sep)[0];
   const relPath = relativeStaging.split(path.sep).slice(1).join(path.sep);
   const target = path.join(mergePath, relPath);
-  const loadOrder: any[] = (context.api.getState() as any).persistent?.loadOrder?.[profile.id] ?? [];
-  const idx = loadOrder.findIndex(lo => lo.id === modId);
-  const prefix = makePrefix(idx);
+  const prefix = prefixForMod(getLoadOrder(context.api, GAME_ID), modId);
   await fs.ensureDirWritableAsync(path.dirname(target), () => Promise.resolve());
   const ext = path.extname(filePath);
   if (ext === MOVIES_EXTENSION) {
@@ -33,12 +31,6 @@ async function doMerge(context: types.IExtensionContext, filePath: string, merge
     return;
   }
   return Promise.reject('Unsupported file encountered in merge pass');
-}
-
-function makePrefix(input: number): string {
-  let res = ''; let rest = input;
-  while (rest > 0) { res = String.fromCharCode(65 + (rest % 25)) + res; rest = Math.floor(rest / 25); }
-  return util.pad(res as any, 'A', 3);
 }
 
 export default ETBMovieMerger;

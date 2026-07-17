@@ -19,18 +19,21 @@ export const STOP_PATTERNS = ['[^/]*\\.pak$'];
 // Internal IDs
 export const MODTYPE_MOVIES = 'etb-modtype-movies';
 export const MODTYPE_PAK = 'etb-modtype-pak';
+export const MODTYPE_LOGICMODS = 'etb-modtype-logicmods';
 export const INSTALLER_MOVIES = 'etb-installer-movies';
 export const INSTALLER_BP_LUA = 'etb-installer-bp-lua';
 
-// UE4SS expected markers (simplified detection). These are typical files delivered by UE4SS.
+// UE4SS expected markers
 export const UE4SS_CORE_DLL = 'UE4SS.dll';
 export const UE4SS_FOLDER = 'UE4SS';
 
+// UE4SS mods subfolder (relative to Win64), e.g. Win64/UE4SS/Mods
+export const UE4SS_MODS_SUBPATH = path.join('UE4SS', 'Mods');
+// LogicMods folder (relative to game root)
+export const LOGICMODS_PATH = path.join('EscapeTheBackrooms', 'Content', 'Paks', 'LogicMods');
+
 export const UE4_VERSION = '4.27';
-export const UE4SS_GITHUB_API = 'https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases/latest';
-export const UE4SS_GITHUB_RELEASES_API = 'https://api.github.com/repos/UE4SS-RE/RE-UE4SS/releases';
 export const ETB_UE4SS_GITHUB_API = 'https://api.github.com/repos/ETBCommunity/UE4SS/releases/latest';
 
-// Nexus mod IDs for recommended alternatives
-export const ETB_UE4SS_NEXUS_MOD_ID = 138;
+// Nexus mod IDs
 export const INTERPOSE_NEXUS_MOD_ID = 7;

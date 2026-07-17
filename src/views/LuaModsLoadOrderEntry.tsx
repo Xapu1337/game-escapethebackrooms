@@ -28,15 +28,18 @@ function LuaModsLoadOrderEntry(props: IProps) {
     const dispatch = useDispatch();
     const setStatus = (enabled: boolean) => dispatch(setLuaModStatus(profile.id, folderName, enabled));
 
+    if (!entry) return null;
+
     return (
-    <div style={{fontSize: 'large'}} className='luamod-entry'>
-        <Toggle 
-            checked={entry.enabled}
-            onToggle={(e) => setStatus(e.valueOf())}
-        >
-            <span title={folderName}>{folderName}</span>
-        </Toggle>
-    </div>
+        <div className={`list-group-item etb-luamod-entry${entry.enabled ? '' : ' is-disabled'}`}>
+            <Toggle
+                checked={entry.enabled}
+                onToggle={(e) => setStatus(e.valueOf())}
+            >
+                <span className='etb-luamod-name' title={folderName}>{folderName}</span>
+            </Toggle>
+            <span className='etb-luamod-status'>{entry.enabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
     );
 }
 
