@@ -36,29 +36,12 @@ It is also possible to manually set the game folder if the auto detection doesn'
 
 If your game lacks these files/folders then it is likely that your installation has become corrupted somehow.
 
-## Mod Management
-
-By default, Vortex will deploy files to the game's root folder and extracts the archive while preserving the folder structure.
-
-Vortex will deploy files to the game's mod folder (`/EscapeTheBackrooms/Content/Paks/~mods`) if only `.pak` files are detected and extracts all nested files in the archive to their own individual within this one, ignoring archive folder structure. Each mod folder will be prefixed based on the users load order set within Vortex. Any files that are overwritten are backed up for when the mod is disabled or removed.
-
-This extension also supports mods that overwrite the game's movie files, located within subfolders under `/EscapeTheBackrooms/Content/Movies`. When a mod is added that contains at least 1 `.bk2` file, the `etb-modtype-movies` installer is used. This searches through the movies folder within the game and attempts to match anything that matches inside of the mod archive. If found, Vortex overwrites them (after backing up the originals) and if any `pak` files are also found within a movie mod, then these are processed the same as a pak-only mod.
-
-## Mod Loader Install
-
-A "Mod Loader" action is available in the Mods toolbar to install the loader(s) required for Blueprint/Lua logic mods. You can choose either one or both of:
-
-- **ETB UE4SS** — an ETB-specific UE4SS fork. Vortex downloads the latest GitHub release and extracts it directly into the game directory. If you already have a customised UE4SS install, back it up before using the action.
-- **Interpose** — a Nexus-hosted mod loader, installed and managed as a regular Vortex mod.
-
-Installing one no longer forces the other — pick whichever the mods you use require. The same dialog lets you uninstall either component later.
 
 ## Load Order
 
 The load order of mods can now be set within Vortex to allow greater control over what mods are loaded before other mods. This is important so as multiple mods can change the same thing and so load order can be used to minimize collisions. Mods loaded last will have priority over mods loaded first.
 
 <!--Individual mod entries can be enabled/disabled from the load order section.
-
 
 ## Load Order Management
 
