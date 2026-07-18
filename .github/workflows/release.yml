@@ -10,6 +10,13 @@ on:
         description: 'Version (vX.Y.Z)'
         required: true
 
+# id-token: write is required for cosign keyless (OIDC) signing, without it cosign
+# falls back to interactive device flow and the run hangs until the token expires.
+# contents: write lets the release job create the GitHub Release and upload assets.
+permissions:
+  contents: write
+  id-token: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
