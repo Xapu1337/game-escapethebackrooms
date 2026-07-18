@@ -24,7 +24,15 @@ export function isUE4SSInstalledSync(context: types.IExtensionContext): boolean 
         if (!gp) return false;
         const fsNative = require('fs');
         const binPath = path.join(gp, 'EscapeTheBackrooms', 'Binaries', 'Win64');
-        return [UE4SS_CORE_DLL, 'dwmapi.dll', UE4SS_FOLDER].some(f => fsNative.existsSync(path.join(binPath, f)));
+        // Only treat UE4SS as installed if an actual binary is present. Do NOT key off
+        // the UE4SS folder, since the folder can exist without UE4SS being installed and
+        // is not proof UE4SS itself is present.
+        const markers = [
+            path.join(binPath, 'dwmapi.dll'),                    // proxy loader
+            path.join(binPath, UE4SS_CORE_DLL),                  // old layout: Win64/UE4SS.dll
+            path.join(binPath, UE4SS_FOLDER, UE4SS_CORE_DLL),    // 1.3.0 layout: Win64/ue4ss/UE4SS.dll
+        ];
+        return markers.some(f => fsNative.existsSync(f));
     } catch (e) {
         log('error', 'isUE4SSInstalledSync failed', e);
         return false;
@@ -47,7 +55,7 @@ export function getUE4SSVersionSync(context: types.IExtensionContext): string | 
     }
 }
 
-// ── Vortex mod detection by Nexus mod ID ──
+// Vortex mod detection by Nexus mod ID
 
 export function findModByNexusId(context: types.IExtensionContext, nexusModId: number): types.IMod | undefined {
     const state = context.api.getState();
@@ -221,7 +229,7 @@ export async function uninstallETBUE4SS(context: types.IExtensionContext): Promi
     context.api?.sendNotification?.({ type: 'success', message: 'ETB UE4SS uninstalled from Binaries/Win64' });
 }
 
-// ── Install / update Interpose via Vortex Nexus API (context.api.ext) ──
+// Install / update Interpose via Vortex Nexus API (context.api.ext)
 
 async function getLatestInterposeFile(context: types.IExtensionContext): Promise<{ fileId: number; version: string } | undefined> {
     const ext = (context.api as any).ext;
@@ -245,7 +253,7 @@ export async function installInterpose(context: types.IExtensionContext, options
         const installedFileId = Number(existing.attributes?.fileId);
         if (installedFileId === latest.fileId) {
             if (!options?.silent) {
-                context.api?.sendNotification?.({ type: 'success', message: `Interpose ${latest.version} — newest version already installed` });
+                context.api?.sendNotification?.({ type: 'success', message: `Interpose ${latest.version} is already the newest version installed` });
             }
             return;
         }
@@ -277,7 +285,7 @@ export async function installInterpose(context: types.IExtensionContext, options
         });
     } else {
         if (!latest) {
-            return Promise.reject('Could not determine latest Interpose version — check Nexus login');
+            return Promise.reject('Could not determine latest Interpose version, check Nexus login');
         }
         if (!existing) context.api?.sendNotification?.({ type: 'info', message: `Downloading Interpose ${latest.version}...` });
         try {
@@ -307,7 +315,7 @@ export async function installInterpose(context: types.IExtensionContext, options
         context.api?.sendNotification?.({ type: 'success', message: `Interpose${vStr} installed and enabled` });
     } catch (e) {
         log('warn', '[interpose] could not auto-enable after install', e);
-        context.api?.sendNotification?.({ type: 'info', message: 'Interpose installed — enable it in the Mods list once it finishes' });
+        context.api?.sendNotification?.({ type: 'info', message: 'Interpose installed, enable it in the Mods list once it finishes' });
     }
 }
 
@@ -324,7 +332,7 @@ export async function checkInterposeOutdated(context: types.IExtensionContext): 
     log('info', '[interpose] update available', { installedFileId, latestFileId: latest.fileId, latestVersion: latest.version });
     context.api?.sendNotification?.({
         type: 'warning',
-        message: `Interpose update available: ${installedVersion} → ${latest.version}`,
+        message: `Interpose update available: ${installedVersion} to ${latest.version}`,
         actions: [
             {
                 title: 'Update Now',
@@ -416,26 +424,46 @@ async function downloadWithRetry(url: string, dest: string, attempts: number): P
     throw lastErr instanceof Error ? lastErr : new Error('Unknown download error');
 }
 
+// A hung socket (connected but sending no data) would otherwise stall a download forever
+// with nothing to trigger a retry, so cap how long we wait on an idle connection.
+const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
+
 function downloadFile(url: string, dest: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const fsNative = require('fs');
         let out: any;
         try { out = fsNative.createWriteStream(dest); } catch (e: any) { return reject(e); }
-        let finished = false;
+
+        let settled = false;
+        const settle = (err?: Error) => {
+            if (settled) return;
+            settled = true;
+            try { out.close(); } catch (closeErr) { log('warn', 'Could not close write stream', closeErr); }
+            if (err) reject(err); else resolve();
+        };
+
+        // A failing disk (full, no write permission) surfaces on the write stream, not the
+        // request, so it needs its own handler or it becomes an unhandled error event.
+        out.on('error', (err: Error) => settle(err));
+
         const req = https.get(url, { headers: { 'User-Agent': 'vortex-etb-extension' } }, (res) => {
             if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                res.destroy(); return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+                res.destroy();
+                if (settled) return;
+                settled = true;
+                try { out.close(); } catch { /* ignore */ }
+                return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
             }
-            if (res.statusCode !== 200) { return reject(new Error('HTTP ' + res.statusCode)); }
+            if (res.statusCode !== 200) { res.destroy(); return settle(new Error('HTTP ' + res.statusCode)); }
             res.pipe(out);
-            out.on('finish', () => { finished = true; out.close(() => resolve()); });
+            out.on('finish', () => settle());
         });
-        req.on('error', (err) => {
-            if (!finished) {
-                try { out.close(); } catch (closeErr) { log('warn', 'Could not close write stream on request error', closeErr); }
-                reject(err);
-            }
+
+        // Destroying the request on idle timeout emits 'error', which downloadWithRetry retries.
+        req.setTimeout(DOWNLOAD_IDLE_TIMEOUT_MS, () => {
+            if (!settled) req.destroy(new Error('download timed out'));
         });
+        req.on('error', (err) => settle(err));
     });
 }
 

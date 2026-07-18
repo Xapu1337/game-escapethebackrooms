@@ -2,9 +2,8 @@ import path from 'path';
 import { actions, fs, log, selectors, types, util } from 'vortex-api';
 import * as VortexUtils from './VortexUtils';
 import { ILoadOrderEntry, IProps } from './types';
-import Migrate from './migration';
 import { LuaModsMonitor, refreshLuaMods, writeManifest } from './util/luaModsUtil';
-import { writeBPModLoadOrder } from './util/bpModLoaderUtil';
+import { writeBPModLoadOrder, cleanupStaleLogicModPaks } from './util/bpModLoaderUtil';
 import LuaModsLoadOrderPage from './views/LuaModsLoadOrderPage';
 import { luaModReducer } from './reducers/luaReducer';
 
@@ -85,7 +84,6 @@ function main(context: types.IExtensionContext) {
   registerGame(context);
   registerLoadOrderIntegration(context);
   registerLuaPage(context);
-  registerMigrations(context);
   registerModTypes(context);
   registerInstallers(context);
   registerMerges(context);
@@ -162,11 +160,14 @@ function registerLoadOrderIntegration(context: types.IExtensionContext) {
     serializeLoadOrder: async (loadOrder) => SerializeLoadOrder(context, loadOrder),
     toggleableEntries: false,
     usageInstructions:
-      'Re-position entries by dragging and dropping them. Mods further down load last and win conflicts.\n\n'
-      + 'PAK mods (~mods): ordered by this list\n\n'
-      + 'Blueprint mods (LogicMods): this list is written to UE4SS\'s BPModLoaderMod load_order.txt. '
-      + 'It only takes effect if ETB UE4SS is installed\n\n'
-      + 'Movie replacers (.bk2) are unaffected.',
+      'Drag entries to reorder them. Items lower in the list load later.\n\n'
+      + 'PAK mods (~mods): the game mounts these in this order, so a mod lower in the list '
+      + 'overrides assets from mods above it.\n\n'
+      + 'Blueprint mods (LogicMods): this list sets the order their logic runs, written to '
+      + 'BPModLoaderMod\'s load_order.txt. It only applies when ETB UE4SS is installed. The pak '
+      + 'files stay named as the author shipped them, so their alphabetical order in the folder '
+      + 'is left alone (renaming them would stop the mod from loading).\n\n'
+      + 'Movie replacers (.bk2) are not affected by this list.',
   });
 }
 
@@ -184,10 +185,6 @@ function registerLuaPage(context: types.IExtensionContext) {
     },
   );
   context.registerReducer(['session', 'lualoadorder'], luaModReducer);
-}
-
-function registerMigrations(context: types.IExtensionContext) {
-  context.registerMigration((oldVer) => Migrate(context, oldVer));
 }
 
 function registerModTypes(context: types.IExtensionContext) {
@@ -245,7 +242,7 @@ function registerMerges(context: types.IExtensionContext) {
   // NOTE: LogicMods (blueprint) paks are deliberately NOT merged/renamed here.
   // BPModLoaderMod derives each mod's asset path from the pak's file name
   // (/Game/Mods/<pakName>/ModActor), so renaming a pak stops the mod loading.
-  // Their load order is written to BPModLoaderMod/load_order.txt instead —
+  // Their load order is written to BPModLoaderMod/load_order.txt instead,
   // see util/bpModLoaderUtil.
 }
 
@@ -338,7 +335,7 @@ async function showModLoaderHubDialog(context: types.IExtensionContext): Promise
   if (!selected['etb'] && !selected['interpose']) {
     context.api.sendNotification?.({
       type: 'info',
-      message: 'No mod loader selected — nothing to install.',
+      message: 'No mod loader selected, nothing to install.',
       displayMS: 4000,
     });
     return;
@@ -401,11 +398,17 @@ async function showUninstallDialog(
 
 
 async function ensureGameFolders(context: types.IExtensionContext, gamePath: string): Promise<void> {
+  // ~mods and LogicMods are engine/loader-agnostic deploy targets, so always ensure them.
   const targets = [
-    { p: path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH), label: 'Win64/UE4SS/Mods' },
     { p: path.join(gamePath, MODSFOLDER_PATH), label: '~mods' },
     { p: path.join(gamePath, LOGICMODS_PATH), label: 'LogicMods' },
   ];
+  // Win64/UE4SS/Mods belongs to UE4SS. Only ensure/seed it when UE4SS is actually
+  // installed. Fabricating it otherwise creates UE4SS's folder structure without
+  // UE4SS present, which also makes it look installed when it isn't.
+  if (isUE4SSInstalledSync(context)) {
+    targets.push({ p: path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH), label: 'Win64/UE4SS/Mods' });
+  }
 
   const blocked: { p: string; label: string }[] = [];
   for (const t of targets) {
@@ -486,6 +489,7 @@ function setupReactiveHooks(context: types.IExtensionContext) {
       if (!gp) return;
       await ensureGameFolders(context, gp);
       notifyIfModLoaderMissing(context, 'activation');
+      cleanupStaleLogicModPaks(context.api).catch(e => log('warn', 'Stale LogicMods cleanup failed', e));
       checkInterposeOutdated(context).catch(e => log('warn', 'Interpose version check failed', e));
     });
     context.api.events.on('will-deploy', () => monitor.pause());
@@ -494,10 +498,12 @@ function setupReactiveHooks(context: types.IExtensionContext) {
       monitor.resume();
       refreshLuaMods(context.api);
       notifyIfModLoaderMissing(context, 'deploy');
-      // Blueprint mod order lives in BPModLoaderMod/load_order.txt, not in the pak
-      // file names, so it has to be rewritten whenever deployment changes.
-      writeBPModLoadOrder(context.api)
-        .catch(err => log('error', 'Could not write BPModLoader load order', err));
+      // Remove any stale AAA_-prefixed paks left by the old merge approach, then
+      // (re)write the blueprint load order. It lives in BPModLoaderMod/
+      // load_order.txt, not in the pak file names.
+      cleanupStaleLogicModPaks(context.api)
+        .then(() => writeBPModLoadOrder(context.api))
+        .catch(err => log('error', 'LogicMods post-deploy maintenance failed', err));
     });
     context.api.events.on('did-purge', () => {
       monitor.resume();
@@ -610,18 +616,15 @@ async function SerializeLoadOrder(
 }
 
 async function setup(context: types.IExtensionContext, discovery: types.IDiscoveryResult): Promise<void> {
+  // Only create the loader-agnostic mod folders. The Win64/UE4SS/Mods folder is
+  // created by UE4SS itself (or by installETBUE4SS), so don't fabricate it here.
   const foldersToCreate = [
     path.join(discovery.path, MODSFOLDER_PATH),
     path.join(discovery.path, LOGICMODS_PATH),
-    path.join(discovery.path, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH),
   ];
   for (const f of foldersToCreate) {
     await fs.ensureDirWritableAsync(f).catch(() => undefined);
   }
-  // Seed Mods.txt so the Lua monitor always has a file to watch
-  const modsTxt = path.join(discovery.path, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH, 'Mods.txt');
-  const txtExists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
-  if (!txtExists) await fs.writeFileAsync(modsTxt, '; Created by Vortex\n', { encoding: 'utf8' }).catch(() => undefined);
 }
 
 async function requiresLauncher(gamePath: string, store?: string) {

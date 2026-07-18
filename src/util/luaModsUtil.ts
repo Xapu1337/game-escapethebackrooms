@@ -1,7 +1,7 @@
 import path from 'path';
 import { fs, log, util, types, selectors } from 'vortex-api';
 import * as actions from '../actions/luaActions';
-import { GAME_ID } from '../common';
+import { GAME_ID, UE4SS_MODS_SUBPATH } from '../common';
 
 interface ILuaMod {
     folderName: string;
@@ -36,17 +36,14 @@ export class LuaModsMonitor {
         const state = this.API.getState();
         const discoveryPath = state.settings.gameMode.discovered['escapethebackrooms']?.path ?? undefined;
         if (!discoveryPath) throw new Error('Escape The Backrooms is not discovered!');
-        const luaModsPath = path.join(discoveryPath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'UE4SS', 'Mods');
-        // Ensure directory & seed Mods.txt so watcher always attaches
-        try {
-            await fs.ensureDirWritableAsync(luaModsPath).catch(() => undefined);
-            const modsTxt = path.join(luaModsPath, 'Mods.txt');
-            const exists = await fs.statAsync(modsTxt).then(() => true).catch(() => false);
-            if (!exists) {
-                await fs.writeFileAsync(modsTxt, '; Lua Mods Load Order\n', { encoding: 'utf8' }).catch(() => undefined);
-            }
-        } catch (e) {
-            log('warn', 'Unable to prepare Lua Mods directory', e);
+        const luaModsPath = path.join(discoveryPath, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH);
+        // The UE4SS Mods folder belongs to UE4SS, so don't fabricate it. If it isn't
+        // there (UE4SS not installed), stay idle; the monitor restarts on the next
+        // game activation once UE4SS creates it.
+        const modsFolderExists = await fs.statAsync(luaModsPath).then(() => true).catch(() => false);
+        if (!modsFolderExists) {
+            log('debug', 'UE4SS Mods folder not present; Lua monitor idle until UE4SS is installed');
+            return;
         }
 
         try {
@@ -99,7 +96,7 @@ export async function openLuaModsFolder(api: types.IExtensionApi) {
     const state = api.getState();
     const gamePath: string | undefined = state.settings.gameMode.discovered['escapethebackrooms']?.path || undefined;
     if (!gamePath) return api.showErrorNotification('Could not open Lua Mods Folder', 'Escape The Backrooms is not properly installed');
-    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'UE4SS', 'Mods');
+    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH);
     try {
         util.opn(luaModsPath);
     }
@@ -120,15 +117,11 @@ export async function refreshLuaMods(api: types.IExtensionApi) {
         api.showErrorNotification('Could not refresh logic mods', 'Unable to locate Escape The Backrooms install folder.');
         return;
     }
-    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', 'UE4SS', 'Mods');
-    // Ensure directory & Mods.txt exist
-    try { await fs.ensureDirWritableAsync(luaModsPath).catch(() => undefined); } catch { /* ignore */ }
+    const luaModsPath = path.join(gamePath, 'EscapeTheBackrooms', 'Binaries', 'Win64', UE4SS_MODS_SUBPATH);
+    // Don't fabricate UE4SS's Mods folder. If it doesn't exist (UE4SS not installed),
+    // there are simply no Lua mods to list.
     const modsTxtPath = path.join(luaModsPath, 'Mods.txt');
-    const modsTxtExists = await fs.statAsync(modsTxtPath).then(() => true).catch(() => false);
-    if (!modsTxtExists) {
-        try { await fs.writeFileAsync(modsTxtPath, '; Lua Mods Load Order\n', { encoding: 'utf8' }); } catch { /* ignore */ }
-    }
-    // Get a list of folders.
+    // Get a list of folders (empty when the UE4SS Mods folder doesn't exist).
     const folderList = await getFolders(luaModsPath).catch(() => []);
     // Parse the Mods.txt file and filter out any missing entries.
     const savedLoadOrder = (await parseManifest(modsTxtPath))

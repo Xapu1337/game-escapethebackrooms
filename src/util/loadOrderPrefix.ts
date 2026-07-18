@@ -3,7 +3,7 @@ import { selectors, types, util } from 'vortex-api';
 // Unreal mounts .pak files in alphabetical path order and the last one mounted wins
 // conflicts, so a mod's load order index is encoded as a prefix that sorts the same way.
 
-/** Prefix used when a mod can't be found in the load order — always sorts last. */
+/** Prefix used when a mod can't be found in the load order, so it always sorts last. */
 export const UNKNOWN_PREFIX = 'ZZZ';
 
 /**

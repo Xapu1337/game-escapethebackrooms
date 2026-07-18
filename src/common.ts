@@ -25,10 +25,13 @@ export const INSTALLER_BP_LUA = 'etb-installer-bp-lua';
 
 // UE4SS expected markers
 export const UE4SS_CORE_DLL = 'UE4SS.dll';
-export const UE4SS_FOLDER = 'UE4SS';
+// The ETB UE4SS fork ships this folder lowercase on disk ('ue4ss'). Match it exactly
+// so paths line up cross-platform and read the way they actually appear in the install
+// (Windows is case-insensitive, but the code shouldn't imply a case that isn't there).
+export const UE4SS_FOLDER = 'ue4ss';
 
-// UE4SS mods subfolder (relative to Win64), e.g. Win64/UE4SS/Mods
-export const UE4SS_MODS_SUBPATH = path.join('UE4SS', 'Mods');
+// UE4SS mods subfolder (relative to Win64), e.g. Win64/ue4ss/Mods
+export const UE4SS_MODS_SUBPATH = path.join(UE4SS_FOLDER, 'Mods');
 // LogicMods folder (relative to game root)
 export const LOGICMODS_PATH = path.join('EscapeTheBackrooms', 'Content', 'Paks', 'LogicMods');
 
